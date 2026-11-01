@@ -1,0 +1,11 @@
+/target/
+/.build/
+/dist/
+/clipcrop-data/
+/vendor/ffprobe*
+/vendor/ffmpeg*
+*.log
+.DS_Store
+
+!/vendor/ffprobe-LICENSE.txt
+__pycache__/
