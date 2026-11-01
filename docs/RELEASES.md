@@ -9,7 +9,7 @@ Checks run at startup and every six hours, with a manual check in Settings. Choo
 1. Change `[package].version` in `Cargo.toml` and update the matching root package version in `Cargo.lock` with Cargo. Commit and push the completed change.
 2. Create a tag matching that version, for example `git tag v0.2.0`, then push that tag with `git push origin v0.2.0`.
 3. The **Build and publish release** workflow checks the tag against `Cargo.toml`, builds native macOS Apple Silicon, macOS Intel, and Linux x86-64 packages, runs the application checks and packaged-app smoke test, and collects all artifacts.
-4. After all builds pass, the workflow stages every asset in a GitHub draft release and publishes it. Stable tags become the latest release. Tags with a prerelease suffix, such as `v0.2.0-rc.1`, are published as prereleases and are excluded from stable app updates.
+4. After all builds pass, the workflow stages every asset in a GitHub draft release and publishes it. GitHub selects the newest stable release using its creation-date/semantic-version ordering, so an older tag build finishing later does not force itself to latest. Tags with a prerelease suffix, such as `v0.2.0-rc.1`, are published as prereleases and are excluded from stable app updates.
 
 No release signing secret or GitHub personal token is needed. The publishing job uses the repository-scoped Actions token with `contents: write`; build jobs have read-only repository access. The workflow refuses to replace an already published release. Use a new version/tag for a changed binary. A failed publish can be retried while its release is still a draft.
 

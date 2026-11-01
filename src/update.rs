@@ -208,6 +208,10 @@ impl Updater {
                 "An update is already in progress"
             );
             ensure!(
+                state.status.status != "checking",
+                "Wait for the release check to finish"
+            );
+            ensure!(
                 state.status.available && state.status.can_install,
                 "Use Download update to install this release manually"
             );
@@ -588,5 +592,34 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn a_check_in_flight_cannot_race_an_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let updater = Arc::new(Updater::new(temp.path().to_owned()));
+        {
+            let mut state = updater.state.lock().await;
+            state.status.available = true;
+            state.status.can_install = true;
+            state.status.status = "checking";
+            state.candidate = select_release(
+                release("v0.2.0"),
+                &Version::parse("0.1.0").unwrap(),
+                Some("macos-aarch64.zip"),
+            )
+            .unwrap();
+        }
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        assert!(
+            updater
+                .install(shutdown.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("release check")
+        );
+        assert_eq!(updater.status().await.phase, "idle");
+        assert!(!shutdown.is_cancelled());
     }
 }

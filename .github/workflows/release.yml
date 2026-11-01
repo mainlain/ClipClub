@@ -150,5 +150,8 @@ jobs:
           if [[ "$RELEASE_TAG" == *-* ]]; then
             gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
           else
-            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+            # Let GitHub choose the newest stable version if older tag builds finish later.
+            release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq '.databaseId')"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -F draft=false -F prerelease=false -f make_latest=legacy --silent
           fi
