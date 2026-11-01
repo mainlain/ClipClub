@@ -30,6 +30,18 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.release_version(tag, root)
 
+    def test_semver_rejects_empty_identifiers_and_leading_zero_prereleases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for version in ('0.2.0+build-1', '0.2.0-rc.1+build.01', '0.2.0--'):
+                (root / 'Cargo.toml').write_text(f'[package]\nversion = "{version}"\n')
+                self.assertEqual(release.release_version('v' + version, root), version)
+            for version in ('0.2.0-', '0.2.0+', '0.2.0-alpha..1', '0.2.0+build..1',
+                            '0.2.0-01', '0.2.0-rc.01', '01.2.0'):
+                (root / 'Cargo.toml').write_text(f'[package]\nversion = "{version}"\n')
+                with self.assertRaises(ValueError):
+                    release.release_version('v' + version, root)
+
     def test_native_architecture_is_enforced(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / 'probe'

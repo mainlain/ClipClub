@@ -147,7 +147,8 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "clipclub $RELEASE_TAG" --generate-notes
           fi
           gh release upload "$RELEASE_TAG" .build/release-assets/* --clobber
-          if [[ "$RELEASE_TAG" == *-* ]]; then
+          release_core="${RELEASE_TAG%%+*}"
+          if [[ "$release_core" == *-* ]]; then
             gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
           else
             # Let GitHub choose the newest stable version if older tag builds finish later.

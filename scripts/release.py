@@ -21,7 +21,14 @@ TARGETS = {
     'x86_64-apple-darwin': ('Darwin', 'x86_64', 'macos-x86_64', '.zip'),
     'x86_64-unknown-linux-gnu': ('Linux', 'x86_64', 'linux-x86_64', '.tar.gz'),
 }
-SEMVER = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?'
+SEMVER_CORE = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+PRERELEASE_IDENTIFIER = r'(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+BUILD_IDENTIFIER = r'[0-9A-Za-z-]+'
+SEMVER = (
+    SEMVER_CORE
+    + rf'(?:-{PRERELEASE_IDENTIFIER}(?:\.{PRERELEASE_IDENTIFIER})*)?'
+    + rf'(?:\+{BUILD_IDENTIFIER}(?:\.{BUILD_IDENTIFIER})*)?'
+)
 
 
 def release_version(tag=None, root=ROOT):
