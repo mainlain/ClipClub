@@ -1,33 +1,37 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="api-token" content="__TOKEN__"><title>Clipcrop</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
-<body>
-<aside class="sidebar">
-<a class="brand" href="#rate" aria-label="Clipcrop home"><span class="brandmark" aria-hidden="true">c<span>c</span></span>clipcrop<span class="beta">alpha</span></a>
-<nav aria-label="Main menu">
-<button data-page="seed" aria-label="Upload"><span class="nav-icon" aria-hidden="true">↥</span>Upload<span class="nav-count" id="seed-count">0</span></button>
-<button data-page="rate" class="active" aria-label="Rate"><span class="nav-icon" aria-hidden="true">▷</span>Rate<span class="nav-count" id="ready-count">0</span></button>
-<button data-page="roll" aria-label="Roll"><span class="nav-icon" aria-hidden="true">⚄</span>Roll</button>
-<button data-page="settings" aria-label="Settings"><span class="nav-icon" aria-hidden="true">☷</span>Settings</button>
-</nav>
-<div class="sidebar-bottom"><div class="balance-label">POINTS</div><div class="balance" id="balance">100<span>.00</span></div><div class="peer-status"><span class="status-dot"></span><span id="peer-status">Finding peers…</span></div></div>
-</aside>
-<div class="app"><header><div id="breadcrumb">Clipcrop <span>/</span> Rate</div><div class="header-right"><span id="profile-name">Anonymous peer</span><span class="avatar" aria-hidden="true">you</span></div></header>
+<body data-page="home">
+<div class="app">
+<header class="app-header">
+<a class="brand" href="#home" aria-label="Clipcrop main menu"><span class="brandmark" aria-hidden="true">c<span>c</span></span>clipcrop</a>
+<div class="points" aria-label="Points balance"><span class="balance-label">POINTS</span><span class="balance" id="balance">100<span>.00</span></span></div>
+</header>
 <main>
-<section id="page-rate" class="page">
-<div class="page-heading"><h1>Rate clips</h1></div>
+<div class="screen-bar"><button id="back-home" class="back-button" data-goto="home" aria-label="Back to main menu"><span aria-hidden="true">←</span> Menu</button><span id="breadcrumb" class="visually-hidden">Home</span></div>
+<section id="page-home" class="page home-page" aria-labelledby="menu-title">
+<h1 id="menu-title">Main menu</h1>
+<nav class="main-menu" aria-label="Main menu">
+<button data-page="seed" aria-label="Upload"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg><span class="menu-label">Upload</span><span class="nav-count" id="seed-count" title="Clips in your library">0</span><span class="menu-arrow" aria-hidden="true">→</span></button>
+<button data-page="rate" aria-label="Rate"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m10 8 6 4-6 4Z"/></svg><span class="menu-label">Rate</span><span class="nav-count" id="ready-count" title="Clips ready to rate">0</span><span class="menu-arrow" aria-hidden="true">→</span></button>
+<button data-page="roll" aria-label="Roll"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 8h.01M16 8h.01M12 12h.01M8 16h.01M16 16h.01" stroke-width="2.5"/></svg><span class="menu-label">Roll</span><span class="menu-arrow" aria-hidden="true">→</span></button>
+<button data-page="settings" aria-label="Settings"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h3m4 0h9M4 17h9m4 0h3"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></svg><span class="menu-label">Settings</span><span class="menu-arrow" aria-hidden="true">→</span></button>
+</nav>
+</section>
+<section id="page-rate" class="page" hidden>
+<div class="page-heading"><h1 tabindex="-1">Rate clips</h1></div>
 <div class="watch-layout"><div><div class="player" id="player-shell"><video id="player" loop playsinline controls preload="auto" aria-label="Current clip"></video><div class="player-empty" id="player-empty"><div class="orbit" aria-hidden="true"><span></span><i>▷</i></div><h2 id="waiting-title">Waiting for clips</h2><p id="waiting-message">Connect a peer to get started.</p><button class="button light" id="connect-peer" data-goto="settings">Connect a peer <span>↗</span></button></div></div><div class="clip-info"><div id="clip-details" hidden><h3 id="clip-title"></h3><p id="clip-meta"></p></div><button class="text-button" id="session-button">Start session →</button></div>
 <div class="rating-panel"><div class="rating-top"><strong>Rate</strong><span>Rating = points spent</span></div><div class="rating-keys" id="rating-keys"></div><div class="rating-bottom"><span>0 = skip</span><span>Press a number key</span></div></div></div>
 <aside class="watch-aside"><div class="queue-card"><div class="section-line"><strong>Queue</strong><span class="queue-count"><span id="queue-total">0</span> / 10</span></div><div class="queue-slots" id="queue-slots" aria-label="Clip queue"></div><p id="download-status" role="status">Waiting for peers…</p></div><details class="rating-help"><summary>How ratings work</summary><p>Your rating spends that many points and rewards the clip’s seeders. A 0 skips for free.</p><p>Ratings 1–9 also seed the clip until you leave Rate or end the session.</p></details></aside></div>
 </section>
 <section id="page-seed" class="page" hidden>
-<div class="page-heading"><h1>Your clips</h1><span class="tag" id="library-cap">0 / 100 clips</span></div>
+<div class="page-heading"><h1 tabindex="-1">Your clips</h1><span class="tag" id="library-cap">0 / 100 clips</span></div>
 <div class="upload-zone" id="dropzone" tabindex="0" role="button" aria-label="Choose videos to upload" aria-describedby="file-rules"><div class="upload-icon" aria-hidden="true">↥</div><h2>Drop videos or <span>browse files</span></h2><div class="file-rules" id="file-rules"><span>MP4 / WEBM</span><i>·</i><span>8 MB MAX</span><i>·</i><span>3 MIN MAX</span><i>·</i><span>2160 × 2160 MAX</span></div><input type="file" id="file-input" accept=".mp4,.webm,video/mp4,video/webm" multiple hidden></div>
 <div class="upload-feedback" id="upload-feedback" role="status" hidden></div>
 <div class="stats-strip"><div><span>SEEDING</span><strong id="stat-seeds">0 <small>clips</small></strong></div><div><span>POINTS EARNED</span><strong id="stat-earned">0.00</strong></div><div><span>STORAGE</span><strong id="stat-storage">0 <small>MB</small></strong></div></div>
 <div class="section-line library-title"><h2>Library <span id="collection-count">0</span></h2><label class="library-sort" for="library-sort">Sort by <select id="library-sort"><option value="recency">Recency</option><option value="points">Points</option><option value="rating">Rating</option></select></label></div><div id="library"></div>
 </section>
 <section id="page-roll" class="page" hidden>
-<div class="page-heading"><h1>Roll</h1><span class="tag">0–9 × YOUR WAGER</span></div>
+<div class="page-heading"><h1 tabindex="-1">Roll</h1><span class="tag">0–9 × YOUR WAGER</span></div>
 <div class="watch-layout roll-layout"><div>
 <div class="player" id="roll-player-shell"><video id="roll-player" playsinline controls preload="auto" aria-label="Roll clip"></video><div class="player-empty" id="roll-player-empty"><div class="orbit" aria-hidden="true"><span></span><i>⚄</i></div><h2 id="roll-waiting-title">Take a chance</h2><p id="roll-waiting-message">Wager points to roll a multiplier and discover a clip.</p></div></div>
 <div class="roll-clip-info" id="roll-clip-details" hidden><h3 id="roll-clip-title"></h3><p id="roll-clip-meta"></p></div>
@@ -35,13 +39,15 @@
 <form id="roll-form" class="roll-form"><label class="field-label" for="roll-wager">Wager points</label><div class="roll-wager-row"><input id="roll-wager" type="number" inputmode="decimal" min="0.000001" step="0.000001" value="1" required aria-describedby="roll-wager-help roll-error"><button class="button primary" id="roll-button" type="submit">Roll →</button></div><p class="field-help" id="roll-wager-help">Your wager is deducted, then wager × multiplier is returned. A 0 loses the wager; a 1 returns it.</p><p id="roll-error" role="alert" hidden></p></form>
 </div><aside class="watch-aside roll-aside"><div class="queue-card"><div class="section-line"><strong>Multiplier odds</strong><span>PER ROLL</span></div><div id="roll-odds" class="roll-odds" aria-label="Multiplier probabilities"></div></div><details class="rating-help"><summary>How Roll works</summary><p>Each multiplier plays a random clip with that rounded average rating. A 0 plays no clip.</p><p>Clips play once. Previously watched clips can appear again.</p><p>The multiplier determines your payout even when no clip with that rating is available.</p></details></aside></div>
 </section>
-<section id="page-settings" class="page" hidden><div class="page-heading"><h1>Settings</h1></div>
+<section id="page-settings" class="page" hidden><div class="page-heading"><h1 tabindex="-1">Settings</h1></div>
 <form id="settings-form" class="settings-form"><div class="settings-section"><h2>Identity</h2><label class="field-label" for="display-name">Display name</label><input id="display-name" maxlength="80" required></div>
 <div class="settings-section"><h2>Playback</h2><label class="toggle-row"><strong>Start videos muted</strong><input type="checkbox" id="muted" role="switch"></label><label class="toggle-row"><strong>Keep 10 clips ready</strong><input type="checkbox" id="prefetch" role="switch"></label><label class="volume-row"><span>Default volume</span><input type="range" min="0" max="1" step="0.05" id="volume"></label></div>
 <div class="settings-section"><h2>Peers</h2><label class="field-label" for="bootstrap-peers">Peer addresses · one per line</label><textarea id="bootstrap-peers" rows="3" placeholder="/ip4/203.0.113.10/tcp/42831/p2p/12D3KooW…"></textarea><div class="field-label" id="listen-label">Your addresses · click to copy</div><div class="address-list" id="listen-addresses" aria-labelledby="listen-label">Finding addresses…</div><details class="settings-help"><summary>Connection help</summary><p>Nearby peers connect automatically. For other networks, add a reachable peer address. You may need to forward the peer and torrent ports listed in About. There is no hosted discovery service.</p></details></div>
 <details class="settings-section about-section"><summary>About</summary><div class="field-label" id="peer-id-label">Peer ID</div><div class="copy-field" aria-labelledby="peer-id-label"><code id="peer-id"></code><button type="button" class="text-button" id="copy-id">Copy</button></div><div class="about-grid"><span>Version</span><strong>0.1.0 · experimental alpha</strong><span>File limits</span><strong>8 MB · 180 sec · 2160 × 2160 px</strong><span>Data folder</span><code id="data-folder"></code><span>Network ports</span><strong id="network-ports"></strong></div><p class="field-help">Points use signed peer receipts and the peers visible to the rater. Global consensus and protection against duplicate identities are not implemented.</p></details><div class="save-row"><button class="button primary" type="submit">Save changes</button><span id="save-status" role="status"></span></div></form>
 </section>
-</main></div>
+</main>
+<footer class="app-footer"><div class="peer-status" role="status"><span class="status-dot" aria-hidden="true"></span><span id="peer-status">Finding peers…</span></div><span id="profile-name" title="Your display name">Anonymous peer</span></footer>
+</div>
 <div id="toast" role="status" hidden></div>
 <dialog id="preview-dialog"><button id="close-preview" aria-label="Close preview">×</button><video id="preview-video" loop controls playsinline></video><p id="preview-title"></p></dialog>
 </body></html>

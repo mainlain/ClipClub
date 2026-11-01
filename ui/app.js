@@ -3,9 +3,10 @@ const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="api-token"]').content;
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let lastNotice=null;
-let state=null, page='rate', current=null, busy=false, uploading=false, settingsDirty=false, initialized=false, toastTimer;
+let state=null, page='home', current=null, busy=false, uploading=false, settingsDirty=false, initialized=false, toastTimer;
 let rollBusy=false, rollMediaKey='', rollStartedKey='';
 let refreshVersion=0;
+let navigationQueue=Promise.resolve();
 async function api(path, body, method='POST') {
   const options={method,headers:{'x-clipcrop-token':token}};
   if(body instanceof FormData) options.body=body;
@@ -34,22 +35,41 @@ function renderLibrary(){
   const markup=library.length?library.map(({clip:c,seeding,points_earned,average_rating,rating_count})=>`<div class="library-row"><button class="clip-thumb" data-preview="${c.id}" aria-label="Preview ${esc(c.title)}">▷</button><div class="row-detail"><h3>${esc(c.title)}</h3><p>${esc(c.extension.toUpperCase())} · ${duration(c.duration_secs)} · ${c.width} × ${c.height} · ${(c.size/1e6).toFixed(2)} MB</p><p class="clip-stats"><span><strong>${fmtPoints(points_earned)}</strong> points earned</span><span title="Average of 1–9 ratings; skips are excluded.">${average_rating===null?'Unrated':`Rating <strong>${average_rating.toFixed(1)} / 9</strong> · ${rating_count} rating${rating_count===1?'':'s'}`}</span></p></div><span class="seeding-tag">${seeding?'● Seeding':'○ Unavailable'}</span><div class="row-actions"><button data-torrent="${c.id}">Torrent ↗</button><button data-remove="${c.id}">Remove</button></div></div>`).join(''):'<div class="library-empty"><span aria-hidden="true">▧</span><h3>No clips yet</h3></div>';
   if($('library').innerHTML!==markup)$('library').innerHTML=markup;
 }
-async function navigate(next){
-  if(!['seed','rate','roll','settings'].includes(next))next='rate';
-  if(initialized && page==='rate' && next!=='rate') {try{await api('session',{active:false});}catch(error){toast(error.message);}}
-  page=next;
-  document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
-  document.querySelectorAll('nav button').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
-  $('breadcrumb').innerHTML=`Clipcrop <span>/</span> ${ {seed:'Upload',rate:'Rate',roll:'Roll',settings:'Settings'}[page] }`;
-  if(page!=='rate')$('player').pause();
-  if(page!=='roll')$('roll-player').pause();
-  if(initialized&&page==='rate'&&(!state||!state.session)){try{await api('session',{active:true});}catch(error){toast(error.message);}}
-  if(page==='settings') fillSettings(true);
-  await refresh();
+function queueNavigation(operation){
+  // Session changes must finish in order, even when menu clicks arrive quickly.
+  navigationQueue=navigationQueue.then(operation).catch(error=>toast(error.message));
+  return navigationQueue;
+}
+function navigate(next){
+  if(!['home','seed','rate','roll','settings'].includes(next))next='home';
+  return queueNavigation(async()=>{
+    if(next===page)return;
+    const previous=page;
+    page=next;
+    if(document.body)document.body.dataset.page=page;
+    document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
+    $('back-home').hidden=page==='home';
+    $('breadcrumb').textContent={home:'Home',seed:'Upload',rate:'Rate',roll:'Roll',settings:'Settings'}[page];
+    if(page!=='rate')$('player').pause();
+    if(page!=='roll')$('roll-player').pause();
+    const focusTarget=document.querySelector(page==='home'?`[data-page="${previous}"]`:`#page-${page} h1`);
+    focusTarget?.setAttribute?.('tabindex',page==='home'?'0':'-1');
+    focusTarget?.focus?.({preventScroll:true});
+    window.scrollTo?.({top:0});
+    if(previous==='rate'){
+      try{await api('session',{active:false});}catch(error){toast(error.message);}
+    }
+    if(page==='rate'){
+      try{await api('session',{active:true});}catch(error){toast(error.message);}
+    }
+    if(page==='settings')fillSettings(true);
+    await refresh();
+  });
 }
 function fillSettings(force=false){
   if(!state||(!force&&settingsDirty))return;
   $('display-name').value=state.settings.display_name;$('muted').checked=state.settings.muted;$('prefetch').checked=state.settings.prefetch;$('volume').value=state.settings.volume;$('bootstrap-peers').value=state.settings.bootstrap_peers.join('\n');
+  document.querySelectorAll('#settings-form input, #settings-form textarea, #settings-form button').forEach(control=>control.disabled=false);
   if(force)settingsDirty=false;
 }
 function render(){
@@ -173,8 +193,8 @@ async function uploads(files){
   uploading=false;$('file-input').value='';
 }
 async function copy(text){try{await navigator.clipboard.writeText(text);toast('Copied to clipboard.');}catch{toast('Select and copy the address shown in Settings.');}}
-document.querySelector('.brand').addEventListener('click',event=>{event.preventDefault();navigate('rate');});
-document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.page)));
+document.querySelector('.brand').addEventListener('click',event=>{event.preventDefault();navigate('home');});
+document.querySelectorAll('button[data-page]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.page)));
 document.querySelectorAll('[data-goto]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.goto)));
 $('rating-keys').innerHTML=Array.from({length:10},(_,score)=>`<button data-score="${score}" aria-label="Rate ${score}, spend ${score} points" disabled>${score}</button>`).join('');
 $('rating-keys').addEventListener('click',event=>{const button=event.target.closest('[data-score]');if(button)rate(Number(button.dataset.score));});
@@ -182,8 +202,8 @@ $('roll-form').addEventListener('submit',event=>{event.preventDefault();roll();}
 $('roll-wager').addEventListener('input',()=>{$('roll-error').hidden=true;renderRoll();});
 $('roll-odds').innerHTML=Array.from({length:10},(_,k)=>`<div><strong>${k}×</strong><span>${(2**(9-k)/1023*100).toFixed(k>5?3:2)}%</span></div>`).join('');
 $('roll-player').addEventListener('error',()=>{if(state?.roll?.clip){$('roll-error').textContent='Your system could not play this clip’s codec. Your roll and payout are saved.';$('roll-error').hidden=false;}});
-document.addEventListener('keydown',event=>{if(event.repeat||event.ctrlKey||event.metaKey||event.altKey||/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)||$('preview-dialog').open)return;if(/^[0-9]$/.test(event.key)&&page==='rate'){event.preventDefault();rate(Number(event.key));}});
-$('session-button').addEventListener('click',async()=>{try{await api('session',{active:!state.session});await refresh();}catch(error){toast(error.message);}});
+document.addEventListener('keydown',event=>{if(event.repeat||event.ctrlKey||event.metaKey||event.altKey||event.target.isContentEditable||/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)||$('preview-dialog').open)return;if(event.key==='Escape'&&page!=='home'){event.preventDefault();navigate('home');}else if(/^[0-9]$/.test(event.key)&&page==='rate'){event.preventDefault();rate(Number(event.key));}});
+$('session-button').addEventListener('click',()=>queueNavigation(async()=>{if(page!=='rate'||!state)return;await api('session',{active:!state.session});await refresh();}));
 $('dropzone').addEventListener('click',event=>{if(event.target!==$('file-input'))$('file-input').click();});
 $('dropzone').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('file-input').click();}});
 $('file-input').addEventListener('change',event=>uploads([...event.target.files]));
@@ -200,9 +220,10 @@ $('library').addEventListener('click',async event=>{
 $('close-preview').addEventListener('click',()=>$('preview-dialog').close());
 $('preview-dialog').addEventListener('close',()=>{$('preview-video').pause();$('preview-video').removeAttribute('src');$('preview-video').load();});
 $('player').addEventListener('error',()=>{if(current)toast('Your system could not play this codec. Press 0 to pass without spending points.');});
+document.querySelectorAll('#settings-form input, #settings-form textarea, #settings-form button').forEach(control=>control.disabled=true);
 $('settings-form').addEventListener('input',()=>settingsDirty=true);
-$('settings-form').addEventListener('submit',async event=>{event.preventDefault();try{await api('settings',{display_name:$('display-name').value.trim(),muted:$('muted').checked,prefetch:$('prefetch').checked,volume:Number($('volume').value),bootstrap_peers:$('bootstrap-peers').value.split('\n').map(s=>s.trim()).filter(Boolean)});settingsDirty=false;$('save-status').textContent='Saved';await refresh();}catch(error){toast(error.message);}});
+$('settings-form').addEventListener('submit',async event=>{event.preventDefault();if(!state){toast('Settings are still loading. Try again in a moment.');return;}try{await api('settings',{display_name:$('display-name').value.trim(),muted:$('muted').checked,prefetch:$('prefetch').checked,volume:Number($('volume').value),bootstrap_peers:$('bootstrap-peers').value.split('\n').map(s=>s.trim()).filter(Boolean)});settingsDirty=false;$('save-status').textContent='Saved';await refresh();}catch(error){toast(error.message);}});
 $('copy-id').addEventListener('click',()=>copy(state.profile_id));
 $('listen-addresses').addEventListener('click',event=>{const button=event.target.closest('[data-address]');if(button)copy(button.dataset.address);});
 window.addEventListener('pagehide',()=>{$('roll-player').pause();if(state?.session)fetch('/api/session',{method:'POST',headers:{'x-clipcrop-token':token,'Content-Type':'application/json'},body:'{"active":false}',keepalive:true}).catch(()=>{});});
-(async()=>{await refresh();try{await api('session',{active:true});}catch(error){toast(error.message);}initialized=true;await navigate('rate');setInterval(refresh,1500);})();
+(async()=>{await refresh();initialized=true;setInterval(refresh,1500);})();

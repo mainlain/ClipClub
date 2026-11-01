@@ -28,6 +28,8 @@ See [Linux run and build instructions](docs/LINUX.md) for runtime packages, port
 
 ## The four screens
 
+The app opens in a compact, resizable window with four menu rows: Upload, Rate, Roll, and Settings. Points stay in the top-right corner, with peer status and your display name in the bottom corners. Use **← Menu** or Escape to return to the main menu. Rating sessions start when you enter Rate and end when you leave it.
+
 - **Seed / upload:** select or drop MP4 or WebM videos. Files pass validation before they enter your library. New clips become torrents and begin seeding automatically. Uploading the exact same bytes joins the same deterministic torrent, even if the original filename differs. You can keep up to 100 permanent clips. Removing a clip stops its permanent seeding. Each clip shows your points earned, its average rating out of 9, and its rating count. Sort by recency (newest additions first), points (most earned first), or rating (highest average first, unrated last).
 - **Rate:** videos loop until you press a number from 0–9 or use a rating button. The number is the points you spend. Zero records the clip as watched without paying anyone. Positive ratings temporarily seed the watched clip for the rest of the rating session; leaving Rate ends those temporary seeds. You cannot rate your own permanently seeded clips or rate the same content twice.
 - **Roll:** wager points for a random integer multiplier from 0 through 9. A 0 loses the wager and plays no clip. Positive results pay `wager × multiplier` in total and play one random clip from that rating tier, without looping. Previously watched clips and clips in your own library are eligible.
