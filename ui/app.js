@@ -5,6 +5,7 @@ const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 let lastNotice=null;
 let state=null, page='home', current=null, busy=false, uploading=false, settingsDirty=false, initialized=false, toastTimer;
 let rollBusy=false, rollMediaKey='', rollStartedKey='';
+let updateStatus=null, updateBusy=false, updateOpening=false, updateNoticeVersion=null, updateTask=null;
 let refreshVersion=0;
 let navigationQueue=Promise.resolve();
 async function api(path, body, method='POST') {
@@ -113,6 +114,59 @@ function render(){
   $('listen-addresses').innerHTML=state.addresses.length?state.addresses.map(address=>`<button type="button" data-address="${esc(address)}" title="Copy peer address">${esc(address)}</button>`).join(''):'Finding addresses…';
   fillSettings();
   renderRoll();
+  renderUpdates(state.update);
+}
+function renderUpdates(next){
+  if(next)updateStatus=next;
+  const update=updateStatus, phase=update?.phase==='installing'?'installing':updateTask==='install'?'downloading':update?.phase||'idle';
+  const checking=updateTask==='check'||update?.status==='checking';
+  const changing=updateBusy||checking||phase==='downloading'||phase==='installing';
+  const available=!!update?.available;
+  const version=update?.current_version||state?.version;
+  if(version){$('app-version').textContent=version;$('about-version').textContent=`${version} · experimental alpha`;}
+  let message='Updates are checked automatically when clipclub starts.';
+  if(phase==='installing')message='Installing update and restarting clipclub…';
+  else if(phase==='downloading')message='Downloading update…';
+  else if(checking)message='Checking for updates…';
+  else if(update?.error)message=update.error;
+  else if(available)message=`Version ${update.latest_version} is available.${phase==='ready'?' Download complete.':''}`;
+  else if(update?.status==='current')message='You have the latest release.';
+  else if(update?.status==='unavailable')message='No published release yet.';
+  $('update-status').textContent=message;
+  $('update-status').classList.toggle('update-available',available);
+  $('check-updates').disabled=changing||updateOpening;
+  $('check-updates').textContent=checking?'Checking…':'Check for updates';
+  $('install-update').hidden=!available||!update.can_install;
+  $('install-update').disabled=changing||updateOpening;
+  $('install-update').textContent=phase==='downloading'?'Downloading…':phase==='installing'?'Restarting…':'Install and restart';
+  $('download-update').hidden=!available||!update.download_url;
+  $('download-update').disabled=changing||updateOpening;
+  $('update-release').hidden=!available||!update.release_url;
+  $('update-release').disabled=changing||updateOpening;
+  $('update-install-help').hidden=!available;
+  $('update-install-help').textContent=update?.can_install?'Install and restart downloads the release and restarts clipclub. Your profile and clips stay in your data folder.':update?.download_url?'Download the new release, quit clipclub, then replace the installed app. Your profile and clips stay in your data folder.':'This release has no download for your platform. Open the release notes to see available packages.';
+  if(available&&update.latest_version!==updateNoticeVersion){updateNoticeVersion=update.latest_version;toast(`clipclub ${update.latest_version} is available. Open Settings to update.`);}
+}
+async function checkUpdates(){
+  if(updateBusy||updateOpening||updateStatus?.status==='checking'||['downloading','installing'].includes(updateStatus?.phase))return;
+  updateBusy=true;updateTask='check';renderUpdates();
+  try{renderUpdates(await api('update/check',{}));}
+  catch(error){renderUpdates({...updateStatus,status:'unavailable',error:`Could not check for updates. ${error.message}`});}
+  finally{updateBusy=false;updateTask=null;renderUpdates();}
+}
+async function openUpdate(target){
+  if(updateOpening||updateBusy||updateStatus?.status==='checking'||!updateStatus?.available||['downloading','installing'].includes(updateStatus.phase))return;
+  updateOpening=true;renderUpdates();
+  try{await api('update/open',{target});}
+  catch(error){toast(error.message);}
+  finally{updateOpening=false;renderUpdates();}
+}
+async function installUpdate(){
+  if(updateBusy||updateOpening||updateStatus?.status==='checking'||!updateStatus?.available||!updateStatus.can_install||['downloading','installing'].includes(updateStatus.phase))return;
+  updateBusy=true;updateTask='install';renderUpdates({...updateStatus,phase:'downloading',error:null});
+  try{renderUpdates(await api('update/install',{}));}
+  catch(error){renderUpdates({...updateStatus,phase:'idle',error:`Update could not be installed. ${error.message}`});}
+  finally{updateBusy=false;updateTask=null;renderUpdates();}
 }
 function fmtRollPoints(number){return Number(number).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:6});}
 function rollWager(){
@@ -224,6 +278,10 @@ document.querySelectorAll('#settings-form input, #settings-form textarea, #setti
 $('settings-form').addEventListener('input',()=>settingsDirty=true);
 $('settings-form').addEventListener('submit',async event=>{event.preventDefault();if(!state){toast('Settings are still loading. Try again in a moment.');return;}try{await api('settings',{display_name:$('display-name').value.trim(),muted:$('muted').checked,prefetch:$('prefetch').checked,volume:Number($('volume').value),bootstrap_peers:$('bootstrap-peers').value.split('\n').map(s=>s.trim()).filter(Boolean)});settingsDirty=false;$('save-status').textContent='Saved';await refresh();}catch(error){toast(error.message);}});
 $('copy-id').addEventListener('click',()=>copy(state.profile_id));
+$('check-updates').addEventListener('click',checkUpdates);
+$('install-update').addEventListener('click',installUpdate);
+$('download-update').addEventListener('click',()=>openUpdate('download'));
+$('update-release').addEventListener('click',()=>openUpdate('release'));
 $('listen-addresses').addEventListener('click',event=>{const button=event.target.closest('[data-address]');if(button)copy(button.dataset.address);});
 window.addEventListener('pagehide',()=>{$('roll-player').pause();if(state?.session)fetch('/api/session',{method:'POST',headers:{'x-clipcrop-token':token,'Content-Type':'application/json'},body:'{"active":false}',keepalive:true}).catch(()=>{});});
 (async()=>{await refresh();initialized=true;setInterval(refresh,1500);})();

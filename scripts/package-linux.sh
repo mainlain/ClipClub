@@ -81,8 +81,8 @@ probe_url = os.environ.get('CLIPCROP_LINUX_PROBE_DOWNLOAD_URL', source_url)
 
 # Stage in a temporary directory so an invalid/failed package does not replace
 # a previously completed Linux folder. Existing user profiles remain untouched.
-output_parent = root / 'dist'
-output_parent.mkdir(exist_ok=True)
+output_parent = Path(os.environ.get('CLIPCROP_DIST_DIR', str(root / 'dist')))
+output_parent.mkdir(parents=True, exist_ok=True)
 (root / '.build').mkdir(exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='clipclub-linux-package-', dir=root / '.build'))
 folder = work / 'linux-x86_64'

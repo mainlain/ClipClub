@@ -24,6 +24,14 @@ Linux x86-64 builds target Ubuntu 22.04 or a compatible newer distribution with 
 
 See [Linux run and build instructions](docs/LINUX.md) for runtime packages, portable data storage, and the optional application-menu launcher. The Linux release artifacts and build/test details are recorded alongside the packaged files.
 
+## App updates
+
+clipclub checks the [latest published GitHub release](https://github.com/mainlain/ClipClub/releases/latest) at startup and every six hours. Settings shows the installed version, available update, release notes, and a manual check. Drafts and prereleases are excluded. GitHub access is anonymous; the app does not contain a GitHub credential.
+
+On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. Your identity, settings, points, and clips stay in the existing profile folder. A direct macOS executable and system-managed installations such as a Debian package offer the matching download for manual installation. An update is installed only when you choose it.
+
+Release builds support macOS Apple Silicon, macOS Intel, and Linux x86-64. See [release publishing and update packaging](docs/RELEASES.md) for the tag-driven build workflow.
+
 ## The four screens
 
 The app opens in a compact, resizable window with four menu rows: Upload, Rate, Roll, and Settings. Points stay in the top-right corner, with peer status and your display name in the bottom corners. Use **← Menu** or Escape to return to the main menu. Rating sessions start when you enter Rate and end when you leave it.
@@ -118,7 +126,7 @@ CLIPCROP_FFPROBE="$PWD/vendor/ffprobe" ./scripts/package.sh
 
 `package.sh` requires Python 3 to collect dependency notices and the Xcode Swift tools on macOS to render the original vector app icon. It uses an installed Cargo, or the workspace-local `.build/cargo/bin/cargo` toolchain if Cargo is not on `PATH`. You can select Cargo explicitly with `CLIPCROP_CARGO`. `CLIPCROP_FFPROBE` must be an absolute path to an executable for the same target as the app; the script resolves the path before building. For a cross-build, set `CLIPCROP_TARGET` and provide the matching probe. A bundled build extracts its verified embedded probe into the profile directory on first launch. No user-installed FFmpeg is required for that release.
 
-Packaging creates the direct executable, a macOS app bundle on macOS, and license notices in `dist`. These are local development packages; the app is not notarized. The default vendored probe is a GPLv3-or-later third-party build. Its exact version, checksum, source links, and redistribution caveats are in [THIRD_PARTY.md](THIRD_PARTY.md). The packaging script collects notices; it does not establish that all corresponding-source obligations have been fulfilled for a public binary release.
+Packaging creates the direct executable, a macOS app bundle on macOS, and license notices in `dist`. These are local development packages; the app is not notarized. The default vendored probe is a GPLv3-or-later third-party build. Its exact version, checksum, source links, and redistribution caveats are in [THIRD_PARTY.md](THIRD_PARTY.md). Public release CI instead builds a minimal validator from pinned upstream FFmpeg/dav1d source and retains the source, build recipe, configuration, and notices in each release package; see [release instructions](docs/RELEASES.md).
 
 For backend-only operation, which needs no desktop WebView dependencies:
 

@@ -8,6 +8,8 @@ mod http;
 mod media;
 mod peer;
 mod torrent;
+mod update;
+mod update_install;
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::{fs::OpenOptions, path::PathBuf, time::Duration};
@@ -151,7 +153,10 @@ fn run() -> Result<()> {
     );
     if options.headless {
         runtime.block_on(async {
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => (),
+                _ = app.shutdown.cancelled() => (),
+            }
             app.stop().await;
         });
     } else {
@@ -181,6 +186,12 @@ fn desktop(
         window::WindowBuilder,
     };
     let event_loop = EventLoop::new();
+    let update_proxy = event_loop.create_proxy();
+    let shutdown = app.shutdown.clone();
+    runtime.spawn(async move {
+        shutdown.cancelled().await;
+        let _ = update_proxy.send_event(());
+    });
     let window = WindowBuilder::new()
         .with_title("clipclub")
         .with_inner_size(LogicalSize::new(480.0, 620.0))
@@ -209,10 +220,14 @@ fn desktop(
     event_loop.run(move |event, _, control_flow| {
         let _ = &webview;
         *control_flow = ControlFlow::Wait;
-        if let Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
+        if app.shutdown.is_cancelled()
+            || matches!(
+                event,
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                }
+            )
         {
             handle.block_on(async {
                 let _ = tokio::time::timeout(Duration::from_secs(5), app.stop()).await;

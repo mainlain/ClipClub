@@ -61,6 +61,9 @@ pub async fn serve(
         .route("/api/roll", post(roll))
         .route("/api/session", post(session))
         .route("/api/settings", post(settings))
+        .route("/api/update/check", post(update_check))
+        .route("/api/update/open", post(update_open))
+        .route("/api/update/install", post(update_install))
         .route("/api/remove/{id}", post(remove))
         .route("/api/video/{id}", get(video))
         .route("/api/torrent/{id}", get(metainfo))
@@ -135,6 +138,29 @@ async fn css() -> impl IntoResponse {
 }
 async fn status(State(state): State<HttpState>) -> Json<Value> {
     Json(state.app.state().await)
+}
+async fn update_check(State(state): State<HttpState>) -> Json<crate::update::Status> {
+    Json(state.app.updates.check().await)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateLink {
+    target: String,
+}
+async fn update_open(State(state): State<HttpState>, Json(input): Json<UpdateLink>) -> ApiResult {
+    state.app.updates.open(&input.target).await?;
+    Ok(Json(json!({"ok":true})))
+}
+async fn update_install(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::update::Status>, ApiError> {
+    Ok(Json(
+        state
+            .app
+            .updates
+            .install(state.app.shutdown.clone())
+            .await?,
+    ))
 }
 async fn upload(State(state): State<HttpState>, mut multipart: Multipart) -> ApiResult {
     let field = multipart

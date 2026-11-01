@@ -50,8 +50,20 @@ dist_directory="${CLIPCROP_DIST_DIR:-$project_root/dist}"
 mkdir -p "$dist_directory/third-party"
 cp "$target_directory/release/$binary_name" "$dist_directory/$binary_name"
 cp README.md LICENSE THIRD_PARTY.md "$dist_directory/"
-if [[ -f vendor/ffprobe-LICENSE.txt ]]; then
+if [[ -n "${CLIPCROP_THIRD_PARTY_NOTICE:-}" ]]; then
+  cp "$CLIPCROP_THIRD_PARTY_NOTICE" "$dist_directory/THIRD_PARTY.md"
+fi
+if [[ -n "${CLIPCROP_PROBE_LICENSE_FILE:-}" ]]; then
+  cp "$CLIPCROP_PROBE_LICENSE_FILE" "$dist_directory/third-party/ffprobe-LICENSE.txt"
+elif [[ -f vendor/ffprobe-LICENSE.txt ]]; then
   cp vendor/ffprobe-LICENSE.txt "$dist_directory/third-party/ffprobe-GPLv3.txt"
+fi
+if [[ -n "${CLIPCROP_PROBE_SOURCE_DIR:-}" ]]; then
+  mkdir -p "$dist_directory/third-party/source"
+  cp -R "$CLIPCROP_PROBE_SOURCE_DIR/." "$dist_directory/third-party/source/"
+fi
+if [[ -n "${CLIPCROP_PROBE_DAV1D_NOTICE:-}" ]]; then
+  cp "$CLIPCROP_PROBE_DAV1D_NOTICE" "$dist_directory/third-party/dav1d-COPYRIGHT.txt"
 fi
 
 # Version reports only work when the probe can run on the build host. A
@@ -99,7 +111,7 @@ if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == *a
   app_directory="$dist_directory/clipclub.app"
   mkdir -p "$app_directory/Contents/MacOS" "$app_directory/Contents/Resources"
   cp "$dist_directory/clipclub" "$app_directory/Contents/MacOS/clipclub"
-  cp LICENSE THIRD_PARTY.md "$app_directory/Contents/Resources/"
+  cp LICENSE "$dist_directory/THIRD_PARTY.md" "$app_directory/Contents/Resources/"
   cp -R "$dist_directory/third-party" "$app_directory/Contents/Resources/"
   icon_set="$project_root/.build/clipclub.iconset"
   mkdir -p "$project_root/.build/swift-module-cache"
@@ -107,21 +119,24 @@ if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == *a
     "$project_root/scripts/make-icon.swift" "$icon_set"
   python3 "$project_root/scripts/make-icns.py" "$icon_set" \
     "$app_directory/Contents/Resources/clipclub.icns"
-  cat > "$app_directory/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>clipclub</string>
-  <key>CFBundleDisplayName</key><string>clipclub</string>
-  <key>CFBundleIdentifier</key><string>local.clipclub</string>
-  <key>CFBundleExecutable</key><string>clipclub</string>
-  <key>CFBundleIconFile</key><string>clipclub.icns</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict></plist>
-PLIST
+  python3 - "$metadata_file" "$app_directory/Contents/Info.plist" <<'PY'
+import json
+from pathlib import Path
+import plistlib
+import sys
+metadata = json.loads(Path(sys.argv[1]).read_text())
+package = next(package for package in metadata['packages'] if package['name'] == 'clipclub')
+version = package['version']
+plist = {
+    'CFBundleName': 'clipclub', 'CFBundleDisplayName': 'clipclub',
+    'CFBundleIdentifier': 'local.clipclub', 'CFBundleExecutable': 'clipclub',
+    'CFBundleIconFile': 'clipclub.icns', 'CFBundlePackageType': 'APPL',
+    'CFBundleShortVersionString': version.split('-')[0].split('+')[0],
+    'CFBundleVersion': version.split('-')[0].split('+')[0],
+    'NSHighResolutionCapable': True,
+}
+Path(sys.argv[2]).write_bytes(plistlib.dumps(plist))
+PY
   if command -v codesign >/dev/null 2>&1; then
     codesign --force --sign - "$app_directory"
   fi

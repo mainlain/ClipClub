@@ -1,0 +1,154 @@
+name: Build and publish release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag matching Cargo.toml (build-only runs may use the current branch)
+        required: true
+        type: string
+      publish:
+        description: Publish after all builds pass (the selected revision must be the exact tag)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release version and revision
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          python3 scripts/release.py version --tag "$RELEASE_TAG"
+          if [[ "$PUBLISH" == true ]]; then
+            test "$(git rev-parse HEAD)" = "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          fi
+          printf 'tag=%s\npublish=%s\n' "$RELEASE_TAG" "$PUBLISH" >> "$GITHUB_OUTPUT"
+      - name: Validate release tooling
+        run: python3 scripts/release.test.py
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.99.1
+          components: rustfmt
+          targets: ${{ matrix.target }}
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev python3 meson ninja-build xz-utils
+      - name: Install macOS validator build dependencies
+        if: runner.os == 'macOS'
+        run: brew install meson ninja pkg-config
+      - name: Download pinned validator sources
+        run: |
+          mkdir -p .build/release-tools
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
+            --output .build/release-tools/ffmpeg-9.0.2.tar.xz
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://download.videolan.org/pub/videolan/dav1d/1.5.3/dav1d-1.5.3.tar.xz \
+            --output .build/release-tools/dav1d-1.5.3.tar.xz
+      - name: Build validator and retain corresponding source
+        run: bash scripts/build-release-ffprobe.sh
+      - name: Check application
+        env:
+          CLIPCROP_FFPROBE: ${{ github.workspace }}/.build/release-ffprobe/ffprobe
+        run: bash scripts/check.sh
+      - name: Build and smoke-test native release package
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          python3 scripts/release.py package --tag "$RELEASE_TAG" --target "$RELEASE_TARGET" \
+            --probe-dir .build/release-ffprobe --output .build/release-assets
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-${{ matrix.target }}
+          path: .build/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: release-*
+          path: .build/release-assets
+          merge-multiple: true
+      - name: Record complete release digests
+        run: |
+          python3 scripts/release.py manifest --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
+            --directory .build/release-assets
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-manifest
+          path: |
+            .build/release-assets/update-manifest.json
+            .build/release-assets/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish complete release
+        if: needs.version.outputs.publish == 'true'
+        run: |
+          # Stage every asset in a draft before advertising the new version.
+          # A retry may finish a draft, but never silently replace a published binary.
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > .build/release-is-draft; then
+            test "$(cat .build/release-is-draft)" = true || { printf 'Release is already published; use a new version.\n' >&2; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "clipclub $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" .build/release-assets/* --clobber
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          fi

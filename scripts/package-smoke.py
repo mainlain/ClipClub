@@ -66,6 +66,14 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
             assert state['balance'] == saved_balance
             assert 'data-page="home"' in html
             assert 'id="library-sort"' in html and 'id="roll-wager"' in html
+            assert 'id="install-update"' in html and 'id="check-updates"' in html
+            assert state['update']['current_version'] == state['version']
+            assert state['update']['phase'] == 'idle'
+            try:
+                request('update/open', {'target': 'file:///untrusted'})
+                raise AssertionError('Client-selected update URL was accepted')
+            except urllib.error.HTTPError as error:
+                assert error.code == 400
             assert Path(state['data_folder']).resolve() == profile.resolve()
             assert json.loads((profile / 'state.json').read_text())['version'] == 1
             assert (profile / 'bin' / 'ffprobe').is_file(), 'Embedded validator was not installed'

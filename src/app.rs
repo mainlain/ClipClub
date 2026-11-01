@@ -39,6 +39,7 @@ pub struct App {
     mutation: Mutex<()>,
     wake: Notify,
     pub shutdown: CancellationToken,
+    pub updates: Arc<crate::update::Updater>,
     pub p2p_port: u16,
     pub torrent_port: u16,
 }
@@ -148,6 +149,7 @@ impl App {
         )
         .await?;
         let app = Arc::new(Self {
+            updates: Arc::new(crate::update::Updater::new(root.clone())),
             root,
             store: Mutex::new(store),
             mesh,
@@ -221,6 +223,19 @@ impl App {
                 tokio::select! {
                     _ = task_app.shutdown.cancelled() => break,
                     event = events.recv() => match event { Some(event) => task_app.peer_event(event).await, None => break }
+                }
+            }
+        });
+        let task_app = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = task_app.shutdown.cancelled() => break,
+                    _ = task_app.updates.check() => (),
+                }
+                tokio::select! {
+                    _ = task_app.shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(crate::update::CHECK_INTERVAL) => (),
                 }
             }
         });
@@ -371,6 +386,7 @@ impl App {
         self.runtime.lock().await.pending.extend(pending);
     }
     pub async fn state(&self) -> Value {
+        let update = self.updates.status().await;
         let store = self.store.lock().await;
         let rt = self.runtime.lock().await;
         let local = &store.data.profile_id;
@@ -403,7 +419,7 @@ impl App {
             let stats = handle.stats();
             json!({"id":id,"downloaded":stats.progress_bytes,"total":stats.total_bytes})
         });
-        json!({"profile_id":local,"balance":store.balance(local),"earned":earned,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
+        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"balance":store.balance(local),"earned":earned,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
     }
     pub async fn upload(&self, filename: String, bytes: Vec<u8>) -> Result<Value> {
         let _guard = self.mutation.lock().await;
