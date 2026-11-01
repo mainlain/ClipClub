@@ -37,6 +37,7 @@ if command -v node >/dev/null 2>&1; then
   while IFS= read -r -d '' script; do
     node --check "$script"
   done < <(find ui -type f -name '*.js' -print0)
+  node --test scripts/library.test.cjs
 fi
 
 printf 'Checks completed.\n'

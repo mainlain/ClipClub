@@ -1,5 +1,7 @@
 use crate::{
-    core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Settings, Store},
+    core::{
+        Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, MICROS_PER_POINT, RatingReceipt, Settings, Store,
+    },
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
     torrent::{self, PreparedTorrent, TorrentEngine},
@@ -323,19 +325,25 @@ impl App {
         let store = self.store.lock().await;
         let rt = self.runtime.lock().await;
         let local = &store.data.profile_id;
-        let earned: f64 = store
-            .data
-            .receipts
-            .iter()
-            .filter(|r| r.payload.seeders.contains(local))
-            .filter_map(|r| r.reward_per_seeder().ok())
-            .sum();
+        let stats = store.clip_stats();
+        let earned = stats.values().map(|s| s.earned_micropoints).sum::<u64>() as f64
+            / MICROS_PER_POINT as f64;
         let library: Vec<Value> = store
             .data
             .library
-            .keys()
-            .filter_map(|id| store.data.catalog.get(id))
-            .map(|clip| json!({"clip":clip,"seeding":rt.permanent.contains_key(&clip.id)}))
+            .values()
+            .filter_map(|local| store.data.catalog.get(&local.clip_id).map(|clip| (local, clip)))
+            .map(|(local, clip)| {
+                let stats = stats.get(clip.id.as_str());
+                json!({
+                    "clip":clip,
+                    "seeding":rt.permanent.contains_key(&clip.id),
+                    "added_at_ms":local.added_at_ms,
+                    "points_earned":stats.map_or(0, |s| s.earned_micropoints) as f64 / MICROS_PER_POINT as f64,
+                    "average_rating":stats.and_then(|s| s.average_rating()),
+                    "rating_count":stats.map_or(0, |s| s.rating_count)
+                })
+            })
             .collect();
         let queue: Vec<&Clip> = rt
             .ready

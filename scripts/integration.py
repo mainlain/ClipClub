@@ -135,6 +135,9 @@ try:
         by_hash[clip['id']] = file
     first = alice.upload(videos[0])
     assert first['duplicate'] and len(alice.state()['library']) == 13
+    library = alice.state()['library']
+    assert all(row['added_at_ms'] > 0 and row['points_earned'] == 0 and row['average_rating'] is None and row['rating_count'] == 0 for row in library)
+    assert len({row['added_at_ms'] for row in library}) == 13
     wait_for(lambda: len(bob.state()['queue']) == 10, 'ten preloaded clips', 60)
     bob.request('session', {'active':True})
     current = bob.state()['queue'][0]
@@ -146,6 +149,8 @@ try:
     result = bob.request('rate', {'id':current['id'],'score':5})
     assert result['seeders'] == 1 and result['reward_per_seeder'] == 5
     wait_for(lambda: abs(alice.state()['balance'] - 105) < .000001, 'lone seeder credited')
+    rated = next(row for row in alice.state()['library'] if row['clip']['id'] == current['id'])
+    assert rated['points_earned'] == rated['average_rating'] == 5 and rated['rating_count'] == 1
     assert bob.state()['balance'] == 95 and bob.state()['temporary_seeds'] == 1
     wait_for(lambda: len(bob.state()['queue']) == 10, 'queue refills after rating')
     assert_http_error(lambda: bob.request('rate', {'id':current['id'],'score':5}))
@@ -153,6 +158,10 @@ try:
     promoted = bob.upload(by_hash[current['id']])
     assert promoted['duplicate'] and promoted['clip']['info_hash'] == current['info_hash']
     assert bob.state()['temporary_seeds'] == 0 and bob.state()['library'][0]['seeding']
+    promoted_row = bob.state()['library'][0]
+    assert promoted_row['average_rating'] == 5 and promoted_row['rating_count'] == 1 and promoted_row['points_earned'] == 0
+    bob.upload(by_hash[current['id']])
+    assert bob.state()['library'][0]['added_at_ms'] == promoted_row['added_at_ms']
     bob.request('session', {'active':False})
     charlie = Client('Charlie'); charlie.connect(alice)
     settings = charlie.state()['settings']
@@ -179,6 +188,12 @@ try:
     wait_for(lambda: abs(alice.state()['balance'] - 108.726779) < .000001, 'multiple seeder payout Alice')
     wait_for(lambda: abs(bob.state()['balance'] - 98.726779) < .000001, 'multiple seeder payout Bob')
     assert charlie.state()['balance'] == 95
+    for client, points in [(alice, 8.726779), (bob, 3.726779)]:
+        rated = next(row for row in client.state()['library'] if row['clip']['id'] == current['id'])
+        assert rated['average_rating'] == 5 and rated['rating_count'] == 2
+        assert abs(rated['points_earned'] - points) < .000001
+    # Other clips were only skipped and must remain unrated.
+    assert all(row['average_rating'] is None and row['rating_count'] == 0 and row['points_earned'] == 0 for row in alice.state()['library'] if row['clip']['id'] != current['id'])
     charlie.request('session', {'active':False})
     assert charlie.state()['temporary_seeds'] == 0
     # Restart preserves wallet, identity, watched history and permanent seeding.
@@ -191,6 +206,10 @@ try:
     assert bob.identity == bob_identity
     assert abs(bob.state()['balance'] - 98.726779) < .000001
     assert len(bob.state()['library']) == 1 and bob.state()['library'][0]['seeding']
+    restored = bob.state()['library'][0]
+    assert restored['added_at_ms'] == promoted_row['added_at_ms']
+    assert restored['average_rating'] == 5 and restored['rating_count'] == 2
+    assert abs(restored['points_earned'] - 3.726779) < .000001
     wait_for(lambda: bool(bob.state()['queue']), 'queue starts again after restart')
     assert all(item['id'] != current['id'] for item in bob.state()['queue'])
     # Duplicate-profile lock prevents simultaneous spending from one profile.

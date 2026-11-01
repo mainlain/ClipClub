@@ -17,6 +17,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const MAX_FILE_BYTES: u64 = 8_000_000;
@@ -172,6 +173,22 @@ impl Settings {
 pub struct LocalClip {
     pub clip_id: String,
     pub path: PathBuf,
+    /// When this clip joined the permanent library. Legacy entries have no known date.
+    #[serde(default)]
+    pub added_at_ms: u64,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct ClipStats {
+    pub earned_micropoints: u64,
+    pub rating_count: usize,
+    rating_total: u64,
+}
+
+impl ClipStats {
+    pub fn average_rating(&self) -> Option<f64> {
+        (self.rating_count > 0).then(|| self.rating_total as f64 / self.rating_count as f64)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -488,11 +505,13 @@ impl Store {
             "Catalog is full"
         );
         let before = self.data.clone();
+        let added_at_ms = self.next_library_added_at_ms();
         self.data.library.insert(
             clip.id.clone(),
             LocalClip {
                 clip_id: clip.id.clone(),
                 path,
+                added_at_ms,
             },
         );
         self.data.catalog.entry(clip.id.clone()).or_insert(clip);
@@ -539,6 +558,10 @@ impl Store {
         let local = LocalClip {
             clip_id: clip.id.clone(),
             path,
+            added_at_ms: self.data.library.get(&clip.id).map_or_else(
+                || self.next_library_added_at_ms(),
+                |local| local.added_at_ms,
+            ),
         };
         if self.data.catalog.get(&clip.id) == Some(&clip)
             && self.data.library.get(&clip.id) == Some(&local)
@@ -550,6 +573,41 @@ impl Store {
         self.data.catalog.insert(clip.id.clone(), clip);
         self.commit(before)?;
         Ok(is_new)
+    }
+
+    fn next_library_added_at_ms(&self) -> u64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let latest = self
+            .data
+            .library
+            .values()
+            .map(|local| local.added_at_ms)
+            .max()
+            .unwrap_or(0);
+        now.max(latest.saturating_add(1))
+    }
+
+    /// Derive ratings and this profile's earnings from validated signed receipts.
+    /// A zero is a free skip, so it contributes neither a rating nor points.
+    pub fn clip_stats(&self) -> BTreeMap<&str, ClipStats> {
+        let mut stats = BTreeMap::<&str, ClipStats>::new();
+        for receipt in &self.data.receipts {
+            let payload = &receipt.payload;
+            let entry = stats.entry(&payload.clip_id).or_default();
+            if payload.score > 0 {
+                entry.rating_count += 1;
+                entry.rating_total += u64::from(payload.score);
+            }
+            if payload.seeders.contains(&self.data.profile_id) {
+                entry.earned_micropoints +=
+                    reward_micropoints(payload.score, payload.seeders.len(), payload.total_users)
+                        .expect("Stored receipts have already passed validation");
+            }
+        }
+        stats
     }
 
     pub fn remove_library(&mut self, id: &str) -> Result<()> {
@@ -734,6 +792,147 @@ mod tests {
         assert!(reward_micropoints(10, 1, 3).is_err());
         assert!(reward_micropoints(5, 4, 3).is_err());
         assert!(reward_micropoints(5, 0, 3).is_err());
+    }
+
+    #[test]
+    fn clip_stats_separate_rating_quality_from_earned_points_and_survive_restart() {
+        let (mut receiver, _, peers) = fixture();
+        let (mut first, first_key, _) = fixture();
+        let (mut second, second_key, _) = fixture();
+        for store in [&mut receiver, &mut first, &mut second] {
+            for n in 1..=4 {
+                store.add_clip(clip(n)).unwrap();
+            }
+        }
+        assert!(receiver.clip_stats().is_empty());
+        let local = receiver.data.profile_id.clone();
+        let low = first
+            .rate(&first_key, &clip(1).id, 4, vec![local.clone()], 3)
+            .unwrap();
+        receiver.apply_receipt(low.clone()).unwrap();
+        receiver
+            .apply_receipt(
+                second
+                    .rate(&second_key, &clip(1).id, 4, vec![local.clone()], 3)
+                    .unwrap(),
+            )
+            .unwrap();
+        receiver
+            .apply_receipt(
+                first
+                    .rate(
+                        &first_key,
+                        &clip(2).id,
+                        9,
+                        vec![local.clone(), peers[0].clone()],
+                        3,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        receiver
+            .apply_receipt(first.rate(&first_key, &clip(3).id, 0, vec![], 3).unwrap())
+            .unwrap();
+        receiver
+            .apply_receipt(
+                first
+                    .rate(
+                        &first_key,
+                        &clip(4).id,
+                        9,
+                        vec![local, peers[0].clone(), peers[1].clone()],
+                        3,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        // Ratings paid to other seeders count toward quality, not our earnings.
+        receiver
+            .apply_receipt(
+                second
+                    .rate(&second_key, &clip(2).id, 1, vec![peers[0].clone()], 3)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(!receiver.apply_receipt(low.clone()).unwrap());
+        let mut tampered = low;
+        tampered.id = "f".repeat(64);
+        tampered.payload.score = 9;
+        assert!(receiver.apply_receipt(tampered).is_err());
+        let stats = receiver.clip_stats();
+        assert_eq!(stats[clip(1).id.as_str()].average_rating(), Some(4.0));
+        assert_eq!(stats[clip(1).id.as_str()].rating_count, 2);
+        assert_eq!(stats[clip(1).id.as_str()].earned_micropoints, 8_000_000);
+        assert_eq!(stats[clip(2).id.as_str()].average_rating(), Some(5.0));
+        assert_eq!(stats[clip(2).id.as_str()].rating_count, 2);
+        assert_eq!(stats[clip(2).id.as_str()].earned_micropoints, 6_708_203);
+        assert_eq!(stats[clip(3).id.as_str()], ClipStats::default());
+        assert_eq!(stats[clip(3).id.as_str()].average_rating(), None);
+        assert_eq!(stats[clip(4).id.as_str()].average_rating(), Some(9.0));
+        assert_eq!(stats[clip(4).id.as_str()].earned_micropoints, 0);
+        let reopened =
+            Store::open(receiver.path.clone(), receiver.data.profile_id.clone()).unwrap();
+        assert_eq!(stats, reopened.clip_stats());
+        for store in [receiver, first, second] {
+            let _ = fs::remove_dir_all(store.path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn library_recency_survives_repairs_restart_and_legacy_state() {
+        let (mut store, _, _) = fixture();
+        let first = clip(1);
+        store
+            .add_verified_library(first.clone(), PathBuf::from(first.filename()))
+            .unwrap();
+        let added_at_ms = store.data.library[&first.id].added_at_ms;
+        assert!(added_at_ms > 0);
+        assert!(
+            !store
+                .add_verified_library(first.clone(), PathBuf::from(first.filename()))
+                .unwrap()
+        );
+        // Startup revalidates metadata and can repair paths after moving a profile.
+        let repaired_path = PathBuf::from("moved").join(first.filename());
+        assert!(
+            !store
+                .add_verified_library(first.clone(), repaired_path)
+                .unwrap()
+        );
+        assert_eq!(store.data.library[&first.id].added_at_ms, added_at_ms);
+        let second = clip(2);
+        store
+            .add_verified_library(second.clone(), PathBuf::from(second.filename()))
+            .unwrap();
+        assert!(store.data.library[&second.id].added_at_ms > added_at_ms);
+        let reopened = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+        assert_eq!(reopened.data.library, store.data.library);
+
+        let mut legacy = serde_json::to_value(&store.data).unwrap();
+        for entry in legacy["library"].as_object_mut().unwrap().values_mut() {
+            entry.as_object_mut().unwrap().remove("added_at_ms");
+        }
+        fs::write(&store.path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut migrated = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+        assert!(
+            migrated
+                .data
+                .library
+                .values()
+                .all(|local| local.added_at_ms == 0)
+        );
+        assert!(
+            !migrated
+                .add_verified_library(first.clone(), PathBuf::from(first.filename()))
+                .unwrap()
+        );
+        assert_eq!(migrated.data.library[&first.id].added_at_ms, 0);
+        migrated.remove_library(&first.id).unwrap();
+        migrated
+            .add_verified_library(first.clone(), PathBuf::from(first.filename()))
+            .unwrap();
+        assert!(migrated.data.library[&first.id].added_at_ms > 0);
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
     }
 
     #[test]

@@ -28,7 +28,7 @@ See [Linux run and build instructions](docs/LINUX.md) for runtime packages, port
 
 ## The four screens
 
-- **Seed / upload:** select or drop MP4 or WebM videos. Files pass validation before they enter your library. New clips become torrents and begin seeding automatically. Uploading the exact same bytes joins the same deterministic torrent, even if the original filename differs. You can keep up to 100 permanent clips. Removing a clip stops its permanent seeding.
+- **Seed / upload:** select or drop MP4 or WebM videos. Files pass validation before they enter your library. New clips become torrents and begin seeding automatically. Uploading the exact same bytes joins the same deterministic torrent, even if the original filename differs. You can keep up to 100 permanent clips. Removing a clip stops its permanent seeding. Each clip shows your points earned, its average rating out of 9, and its rating count. Sort by recency (newest additions first), points (most earned first), or rating (highest average first, unrated last).
 - **Rate:** videos loop until you press a number from 0–9 or use a rating button. The number is the points you spend. Zero records the clip as watched without paying anyone. Positive ratings temporarily seed the watched clip for the rest of the rating session; leaving Rate ends those temporary seeds. You cannot rate your own permanently seeded clips or rate the same content twice.
 - **Roll:** coming soon. No gambling or point deduction is implemented.
 - **Settings:** edit your peer display name, playback mute/volume, automatic prefetch, and saved bootstrap peer addresses. Network details show the local peer identity and connection addresses.
@@ -54,6 +54,10 @@ The validator has a timeout, bounded output and allocation settings, a demuxer a
 ## Points
 
 Every identity starts with **100 points**. A rating costs the rater its score, from 0 through 9.
+
+Library ratings are the arithmetic mean of the positive 1–9 scores in this peer's validated receipts, regardless of who earned the payout. A 0 remains a free skip and is excluded from the average and rating count; clips with no positive ratings show “Unrated.” Per-clip points count only rewards earned by your identity for that content. Both values include existing receipts and survive restarts. Ratings reflect the receipts this peer has received, so disconnected peers can temporarily show different values.
+
+Recency uses the date a clip was added to your permanent library, preserved across restarts, duplicate uploads, and profile moves. Older profiles without addition dates remain compatible; those clips sort behind dated additions, with a stable content-ID order for ties. Points and rating ties use recency, then content ID.
 
 A lone seeder receives 100% of the rating. Otherwise, each eligible seeder receives:
 

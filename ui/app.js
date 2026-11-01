@@ -17,6 +17,21 @@ function toast(message){$('toast').textContent=message;$('toast').hidden=false;c
 function mediaUrl(id){return `/api/video/${encodeURIComponent(id)}?token=${token}`;}
 function fmtPoints(number){return Math.max(0,Number(number)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}
 function duration(seconds){return `${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;}
+function sortLibrary(library,sort){
+  return [...library].sort((a,b)=>{
+    const recent=(b.added_at_ms||0)-(a.added_at_ms||0);
+    const tie=recent||a.clip.id.localeCompare(b.clip.id);
+    if(sort==='points')return b.points_earned-a.points_earned||tie;
+    if(sort==='rating')return (b.average_rating??-1)-(a.average_rating??-1)||tie;
+    return tie;
+  });
+}
+function renderLibrary(){
+  if(!state)return;
+  const library=sortLibrary(state.library,$('library-sort').value);
+  const markup=library.length?library.map(({clip:c,seeding,points_earned,average_rating,rating_count})=>`<div class="library-row"><button class="clip-thumb" data-preview="${c.id}" aria-label="Preview ${esc(c.title)}">▷</button><div class="row-detail"><h3>${esc(c.title)}</h3><p>${esc(c.extension.toUpperCase())} · ${duration(c.duration_secs)} · ${c.width} × ${c.height} · ${(c.size/1e6).toFixed(2)} MB</p><p class="clip-stats"><span><strong>${fmtPoints(points_earned)}</strong> points earned</span><span title="Average of 1–9 ratings; skips are excluded.">${average_rating===null?'Unrated':`Rating <strong>${average_rating.toFixed(1)} / 9</strong> · ${rating_count} rating${rating_count===1?'':'s'}`}</span></p></div><span class="seeding-tag">${seeding?'● Seeding':'○ Unavailable'}</span><div class="row-actions"><button data-torrent="${c.id}">Torrent ↗</button><button data-remove="${c.id}">Remove</button></div></div>`).join(''):'<div class="library-empty"><span aria-hidden="true">▧</span><h3>No clips yet</h3></div>';
+  if($('library').innerHTML!==markup)$('library').innerHTML=markup;
+}
 async function navigate(next){
   if(!['seed','rate','roll','settings'].includes(next))next='rate';
   if(initialized && page==='rate' && next!=='rate') {try{await api('session',{active:false});}catch(error){toast(error.message);}}
@@ -47,8 +62,7 @@ function render(){
   $('stat-earned').textContent=fmtPoints(state.earned);
   $('stat-storage').innerHTML=`${(state.library.reduce((sum,item)=>sum+item.clip.size,0)/1e6).toFixed(1)} <small>MB</small>`;
   $('collection-count').textContent=state.library.length;
-  const libraryMarkup=state.library.length?state.library.map(({clip:c,seeding})=>`<div class="library-row"><button class="clip-thumb" data-preview="${c.id}" aria-label="Preview ${esc(c.title)}">▷</button><div class="row-detail"><h3>${esc(c.title)}</h3><p>${esc(c.extension.toUpperCase())} · ${duration(c.duration_secs)} · ${c.width} × ${c.height} · ${(c.size/1e6).toFixed(2)} MB</p></div><span class="seeding-tag">${seeding?'● Seeding':'○ Unavailable'}</span><div class="row-actions"><button data-torrent="${c.id}">Torrent ↗</button><button data-remove="${c.id}">Remove</button></div></div>`).join(''):'<div class="library-empty"><span aria-hidden="true">▧</span><h3>No clips yet</h3></div>';
-  if($('library').innerHTML!==libraryMarkup)$('library').innerHTML=libraryMarkup;
+  renderLibrary();
   $('queue-slots').innerHTML=Array.from({length:10},(_,i)=>`<span class="${i<state.queue.length?'ready':i===state.queue.length&&state.downloading?'downloading':''}">${i<state.queue.length?'✓':i+1}</span>`).join('');
   const d=state.downloading;
   const downloadStatus=d?`Downloading · ${Math.min(100,Math.round(d.downloaded/Math.max(1,d.total)*100))}%`:state.queue.length>=10?'Queue full':!state.session&&!state.settings.prefetch?'Downloads paused':state.peers.length?'Waiting for more clips…':'Waiting for peers…';
@@ -109,6 +123,7 @@ $('file-input').addEventListener('change',event=>uploads([...event.target.files]
 for(const name of ['dragenter','dragover'])$('dropzone').addEventListener(name,event=>{event.preventDefault();$('dropzone').classList.add('dragover');});
 for(const name of ['dragleave','drop'])$('dropzone').addEventListener(name,event=>{event.preventDefault();$('dropzone').classList.remove('dragover');});
 $('dropzone').addEventListener('drop',event=>uploads([...event.dataTransfer.files]));
+$('library-sort').addEventListener('change',renderLibrary);
 $('library').addEventListener('click',async event=>{
   const preview=event.target.closest('[data-preview]'),remove=event.target.closest('[data-remove]'),torrent=event.target.closest('[data-torrent]');
   if(preview){const clip=state.library.find(item=>item.clip.id===preview.dataset.preview).clip;$('preview-title').textContent=clip.title;$('preview-video').src=mediaUrl(clip.id);$('preview-dialog').showModal();$('preview-video').play().catch(()=>{});}
