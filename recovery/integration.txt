@@ -1,2 +1,0 @@
-PASS: real three-peer mesh,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,zero passes,100-point starts,lone/multiple payouts,dedup,promotion,session cleanup,restart,portable profile relocation,roll wager validation and payouts,watched/owned roll playback,validated watched remote roll downloads,mixed roll/rating gossip,roll wallet persistence,and profile lock.
-Integration logs: /var/folders/jh/fm22qsms7tbcmrb4z4mgct1w0000gn/T/clipcrop-e2e-dd1l2q4f

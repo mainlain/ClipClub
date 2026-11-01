@@ -1,1 +1,0 @@
-PASS: latest packaged v0.1.0, compact menu, library sorting, signed Roll payout, 100-point start, embedded validator, no cryptocurrency actions, identity/settings/balance persistence; temporary profiles removed.

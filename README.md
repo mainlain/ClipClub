@@ -1,10 +1,8 @@
 # clipclub
 
-Recovered latest pre-cryptocurrency v0.1.0 points fork. See [RECOVERY.md](RECOVERY.md) for recovery notes and verification results. This fork uses separate profile and application identities so it can coexist with the cryptocurrency project.
-
 A minimalist Rust desktop app for sharing short videos through BitTorrent and spending points to rate them. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 
-This is a working experimental implementation. Points are a signed peer-to-peer ledger, not a cryptocurrency or a consensus-backed currency. See the network and trust limits below before using it with untrusted peers.
+This is a working experimental implementation. Points use a signed peer-to-peer ledger. See the network and trust limits below before using it with untrusted peers.
 
 ## Run
 
@@ -16,7 +14,7 @@ On macOS, open `dist/clipclub.app`, or run the executable:
 
 On macOS, your profile is stored in `~/Library/Application Support/ClipCrop Points`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-points-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
 
-The profile contains your private identity, points history, settings, watched history, uploaded files, and cached videos. Back up the entire profile directory; creating a different identity starts a new 100-point profile. The clipclub rename retains the original ClipCrop Points profile location, preserving existing identity, points, and library data. This fork imports no data from the cryptocurrency project. To recover personal data from the original points release, use `--data-dir` with a separate copy of a verified version-1 points profile. Cryptocurrency profiles use a different state format and cannot be opened by this version. Do not share `identity.key` with other people.
+The profile contains your private identity, points history, settings, watched history, uploaded files, and cached videos. Back up the entire profile directory; creating a different identity starts a new 100-point profile. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
 
 The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. It does not install a background service.
 
@@ -90,8 +88,8 @@ The embedded UI is served only on `127.0.0.1`, with a fresh per-process access t
 On the same local network, open two instances with separate data directories and ports. mDNS discovery should connect them automatically:
 
 ```sh
-./dist/clipclub --data-dir /tmp/clipcrop-alice --p2p-port 42931 --torrent-port 42932
-./dist/clipclub --data-dir /tmp/clipcrop-bob --p2p-port 42933 --torrent-port 42934
+./dist/clipclub --data-dir /tmp/clipclub-alice --p2p-port 42931 --torrent-port 42932
+./dist/clipclub --data-dir /tmp/clipclub-bob --p2p-port 42933 --torrent-port 42934
 ```
 
 The commands run in separate terminals. For peers on different networks, save the other peer's full reachable multiaddress in Settings, for example:
@@ -125,7 +123,7 @@ Packaging creates the direct executable, a macOS app bundle on macOS, and licens
 For backend-only operation, which needs no desktop WebView dependencies:
 
 ```sh
-CLIPCROP_FFPROBE="$PWD/vendor/ffprobe" cargo run --no-default-features -- --headless --data-dir /tmp/clipcrop-test
+CLIPCROP_FFPROBE="$PWD/vendor/ffprobe" cargo run --no-default-features -- --headless --data-dir /tmp/clipclub-test
 ```
 
 Run the checks with:
@@ -134,7 +132,7 @@ Run the checks with:
 ./scripts/check.sh
 ```
 
-This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating and roll math, signatures and persistence, roll playback behavior, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
+This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating and roll math, signatures and persistence, roll playback behavior, menu navigation, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
 
 ## Source layout
 
@@ -152,3 +150,5 @@ clipclub's original source is MIT licensed. Third-party components retain their 
 ## Validation
 
 The Rust tests cover profile-location and startup-access regressions, including XDG data paths and explicit overrides; one additional socket-transfer test is ignored by default. `python3 scripts/integration.py` also covers a real three-app, 13-video integration run: a ten-video ready queue, both payout cases, rejection of oversized/fake/over-resolution/over-duration uploads, and automatic seeding resume after restart.
+
+`python3 scripts/package-smoke.py dist/clipclub` checks a packaged executable with disposable profiles: embedded validator installation, library and Roll controls, signed Roll payouts, rejection of client-selected outcomes, and identity, settings, and balance persistence across a restart.

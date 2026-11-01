@@ -1,7 +1,3 @@
-# Recovered points fork on Linux
-
-This is the v0.1.0 points recovery. Its normal profile is `$XDG_DATA_HOME/clipcrop-points` (default `~/.local/share/clipcrop-points`). The system package and launcher are `clipclub`; the portable executable is also named `clipclub`. Linux fork binaries have not been rebuilt in this recovery; the instructions below describe how to build/package them. See [RECOVERY.md](../RECOVERY.md).
-
 # Linux
 
 clipclub uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interface, video validator, BitTorrent client, and peer mesh run in the same application process. No browser, Node.js, installed Rust toolchain, or separate FFmpeg installation is needed to run a bundled release.
@@ -42,8 +38,6 @@ The packaged wrapper uses the same profile location:
 ```
 
 Use `--data-dir PATH` with either executable or launcher to explicitly choose a profile folder, including a portable folder beside the executable.
-
-This recovered fork starts a separate points profile; it does not import a profile from the original points app or the cryptocurrency app. To reuse old points data, make a separate copy of a version-1 points profile and open that copy with `--data-dir /path/to/points-profile-copy`. Cryptocurrency profiles are incompatible. Keep the original profile unchanged.
 
 The executable is architecture-specific. Use the package matching your Linux machine; an x86-64 package does not run natively on ARM64.
 

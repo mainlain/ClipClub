@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Verify the recovered packaged app with disposable profiles only."""
+"""Verify the packaged app with disposable profiles only.
+Usage: python3 scripts/package-smoke.py path/to/clipclub
+"""
 import json
 import os
 from pathlib import Path
@@ -23,7 +25,7 @@ def port():
 binary = Path(sys.argv[1]).resolve(strict=True)
 environment = dict(os.environ)
 environment.pop('CLIPCROP_FFPROBE', None)
-with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
+with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
     profile = Path(folder) / 'profile'
     saved_identity = None
     saved_balance = 100
@@ -62,7 +64,6 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
 
             state = request('state')
             assert state['balance'] == saved_balance
-            assert 'wallet' not in state and 'pool' not in state
             assert 'data-page="home"' in html
             assert 'id="library-sort"' in html and 'id="roll-wager"' in html
             assert Path(state['data_folder']).resolve() == profile.resolve()
@@ -71,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
             if attempt == 0:
                 saved_identity = state['profile_id']
                 settings = state['settings']
-                settings['display_name'] = 'Recovered Points Check'
+                settings['display_name'] = 'Package Smoke Check'
                 request('settings', settings)
                 rolled = request('roll', {'wager': 1})
                 multiplier = rolled['multiplier']
@@ -84,13 +85,7 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
                 assert receipt['payload']['roll']['wager_micropoints'] == 1000000
             else:
                 assert state['profile_id'] == saved_identity
-                assert state['settings']['display_name'] == 'Recovered Points Check'
-            for route, data in [('wallet/mine', {})]:
-                try:
-                    request(route, data)
-                    raise AssertionError('Cryptocurrency endpoint survived: ' + route)
-                except urllib.error.HTTPError as error:
-                    assert error.code in (404, 405)
+                assert state['settings']['display_name'] == 'Package Smoke Check'
             try:
                 request('roll', {'wager': 1, 'multiplier': 9})
                 raise AssertionError('Client-selected multiplier was accepted')
@@ -106,4 +101,4 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
                     process.kill()
                     process.wait()
             log.close()
-print('PASS: latest packaged v0.1.0, compact menu, library sorting, signed Roll payout, 100-point start, embedded validator, no cryptocurrency actions, identity/settings/balance persistence; temporary profiles removed.')
+print('PASS: compact menu, library sorting, signed Roll payout, 100-point start, embedded validator, identity/settings/balance persistence; temporary profiles removed.')

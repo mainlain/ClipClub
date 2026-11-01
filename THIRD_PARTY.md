@@ -1,6 +1,6 @@
 # Third-party software
 
-ClipCrop's original Rust and interface source is covered by [LICENSE](LICENSE). Dependencies and bundled programs retain their original licenses.
+clipclub's Rust and interface source is covered by [LICENSE](LICENSE). Dependencies and bundled programs retain their original licenses.
 
 ## FFmpeg / ffprobe
 
@@ -12,7 +12,7 @@ Copyright (c) 2007-2026 the FFmpeg developers
 SHA-256: 2738aa46a7f9acbc8ab09a6715554c90f7de603171ac403726765685df6a0059
 ```
 
-Its `ffprobe -L` output states **GNU GPL version 3 or later**, without warranty. It was built with `--enable-gpl` and `--enable-version3`; the GPL text is included at `vendor/ffprobe-LICENSE.txt` and copied into generated packages. ClipCrop executes this probe as a separate process and does not link against FFmpeg libraries.
+Its `ffprobe -L` output states **GNU GPL version 3 or later**, without warranty. It was built with `--enable-gpl` and `--enable-version3`; the GPL text is included at `vendor/ffprobe-LICENSE.txt` and copied into generated packages. clipclub executes this probe as a separate process and does not link against FFmpeg libraries.
 
 Source and build information:
 
