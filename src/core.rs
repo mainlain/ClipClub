@@ -685,7 +685,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture() -> (Store, Keypair, Vec<String>) {
         let key = Keypair::generate_ed25519();
@@ -697,12 +696,11 @@ mod tests {
                     .to_string()
             })
             .collect();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let directory = tempfile::Builder::new()
+            .prefix("clipcrop-points-core-")
+            .tempdir()
             .unwrap()
-            .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("clipcrop-core-{}-{nonce}", std::process::id()));
+            .keep();
         let store = Store::open(
             directory.join("state.json"),
             key.public().to_peer_id().to_string(),

@@ -46,12 +46,12 @@ if not icon.is_file():
     # Source-tree invocation can use the original asset.
     icon = program.parent.parent.parent / 'assets/icon.svg'
 icon_value = desktop_string(icon) if icon.is_file() else 'video-x-generic'
-entry = applications / 'local.clipcrop.desktop'
+entry = applications / 'local.clipcrop.points.desktop'
 entry.write_text(
     '[Desktop Entry]\n'
     'Type=Application\n'
     'Version=1.0\n'
-    'Name=ClipCrop\n'
+    'Name=ClipCrop Points\n'
     'Comment=A small peer-to-peer video commons\n'
     f'Exec={exec_argument(program)}\n'
     f'Icon={icon_value}\n'

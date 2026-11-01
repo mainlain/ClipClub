@@ -1,3 +1,7 @@
+# Recovered points fork on Linux
+
+This is the v0.1.0 points recovery. Its normal profile is `$XDG_DATA_HOME/clipcrop-points` (default `~/.local/share/clipcrop-points`). The system package and launcher are `clipcrop-points`; the portable executable filename remains `clipcrop`. The historical baseline is preserved in Git. Linux fork binaries have not been rebuilt in this recovery; the instructions below describe how to build/package them. See [RECOVERY.md](../RECOVERY.md).
+
 # Linux
 
 ClipCrop uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interface, video validator, BitTorrent client, and peer mesh run in the same application process. No browser, Node.js, installed Rust toolchain, or separate FFmpeg installation is needed to run a bundled release.
@@ -6,26 +10,26 @@ ClipCrop uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interf
 
 The x86-64 release targets Ubuntu 22.04 or a newer compatible desktop with GTK 3 and WebKitGTK 4.1. It contains an embedded Linux video validator; the OS WebView and GStreamer remain system libraries.
 
-- `clipcrop-0.1.0-linux-x86_64.tar.gz`: portable archive.
-- `clipcrop_0.1.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
+- `clipcrop-points-0.1.0-linux-x86_64.tar.gz`: portable archive.
+- `clipcrop-points_0.1.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
 - `clipcrop-linux-x86_64-SHA256SUMS.txt`: artifact checksums.
 
 On Debian/Ubuntu, install the `.deb` and its runtime dependencies with:
 
 ```sh
-sudo apt install ./clipcrop_0.1.0_amd64.deb
-clipcrop
+sudo apt install ./clipcrop-points_0.1.0_amd64.deb
+clipcrop-points
 ```
 
-All launch methods store your profile in `$XDG_DATA_HOME/clipcrop`, defaulting to `~/.local/share/clipcrop` when `XDG_DATA_HOME` is unset, empty, or relative. Removing the package does not remove that profile.
+All launch methods store your profile in `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Removing the package does not remove that profile.
 
 ## Run a portable package
 
 Extract the archive and run:
 
 ```sh
-tar -xzf clipcrop-0.1.0-linux-x86_64.tar.gz
-cd clipcrop-0.1.0-linux-x86_64
+tar -xzf clipcrop-points-0.1.0-linux-x86_64.tar.gz
+cd clipcrop-points-0.1.0-linux-x86_64
 ./clipcrop
 ```
 
@@ -39,7 +43,7 @@ The packaged wrapper uses the same profile location:
 
 Use `--data-dir PATH` with either executable or launcher to explicitly choose a profile folder, including a portable folder beside the executable.
 
-If an earlier release created an adjacent `clipcrop-data` folder, quit the app and move its contents into your user data profile folder before reopening, or keep using it with `--data-dir /path/to/clipcrop-data`. Old adjacent profiles are not searched or imported automatically. Do not overwrite an existing profile when moving data. Users of the previous desktop launcher already have their profile in the user data folder and need no migration.
+This recovered fork starts a separate points profile; it does not import a profile from the original points app or the cryptocurrency app. To reuse old points data, make a separate copy of a version-1 points profile and open that copy with `--data-dir /path/to/points-profile-copy`. Cryptocurrency profiles are incompatible. Keep the original profile unchanged.
 
 The executable is architecture-specific. Use the package matching your Linux machine; an x86-64 package does not run natively on ARM64.
 
@@ -106,6 +110,6 @@ For a development build using an installed validator:
 CLIPCROP_FFPROBE=/usr/bin/ffprobe cargo run
 ```
 
-The default peer mesh and BitTorrent ports are TCP 42831 and 42832. Local-network discovery uses mDNS. For peers on other networks, enter a reachable peer address in Settings and arrange any necessary port forwarding. There is no hosted discovery or relay service.
+The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Local-network discovery uses mDNS. For peers on other networks, enter a reachable peer address in Settings and arrange any necessary port forwarding. There is no hosted discovery or relay service.
 
 Official platform references: [Wry's Linux requirements](https://github.com/tauri-apps/wry#linux-dependencies) and [GTK integration example](https://docs.rs/wry/0.57.1/wry/#examples).

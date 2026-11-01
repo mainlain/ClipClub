@@ -190,7 +190,7 @@ try:
             '- FFmpeg license information: https://ffmpeg.org/legal.html\n\n' + rust_section)
     (folder / 'THIRD_PARTY.md').write_text(notice)
     build_info = {
-        'application': 'clipcrop', 'version': version, 'target': 'x86_64-unknown-linux-gnu',
+        'application': 'clipcrop-points', 'version': version, 'target': 'x86_64-unknown-linux-gnu',
         'baseline': baseline, 'application_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
         'ffprobe_sha256': hashlib.sha256(probe.read_bytes()).hexdigest(),
         'ffprobe_version': version_report.splitlines()[0],
@@ -198,7 +198,7 @@ try:
         'ffprobe_corresponding_source': source_records,
         'embedded': ['interface assets', 'ffprobe video validator'],
         'system_runtime': ['GTK 3', 'WebKitGTK 4.1', 'GStreamer with playback codecs'],
-        'profile': 'All launch methods: XDG_DATA_HOME/clipcrop, default HOME/.local/share/clipcrop; --data-dir overrides',
+        'profile': 'All launch methods: XDG_DATA_HOME/clipcrop-points, default HOME/.local/share/clipcrop-points; --data-dir overrides',
     }
     ldd_report = os.environ.get('CLIPCROP_LINUX_LDD_REPORT')
     if ldd_report:
@@ -206,7 +206,7 @@ try:
     (folder / 'BUILD-INFO.json').write_text(json.dumps(build_info, indent=2) + '\n')
 
     # Build a portable tar archive with a versioned top-level folder.
-    archive_name = f'clipcrop-{version}-linux-x86_64'
+    archive_name = f'clipcrop-points-{version}-linux-x86_64'
     portable = work / f'{archive_name}.tar.gz'
     def filter_tar(info):
         info.uid = info.gid = 0
@@ -221,21 +221,21 @@ try:
     # Debian package: binary under /opt, launcher on PATH, normal desktop entry.
     # User state is always outside the read-only installed application directory.
     deb_root = work / 'debian'
-    opt = deb_root / 'opt/clipcrop'
+    opt = deb_root / 'opt/clipcrop-points'
     opt.mkdir(parents=True)
     shutil.copytree(folder, opt, dirs_exist_ok=True)
     bin_dir = deb_root / 'usr/bin'; bin_dir.mkdir(parents=True)
-    launcher = bin_dir / 'clipcrop'
-    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipcrop/clipcrop "$@"\n')
+    launcher = bin_dir / 'clipcrop-points'
+    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipcrop-points/clipcrop "$@"\n')
     launcher.chmod(0o755)
     applications = deb_root / 'usr/share/applications'; applications.mkdir(parents=True)
-    (applications / 'local.clipcrop.desktop').write_text(
-        '[Desktop Entry]\nType=Application\nVersion=1.0\nName=ClipCrop\n'
-        'Comment=A small peer-to-peer video commons\nExec=clipcrop\nIcon=clipcrop\n'
+    (applications / 'local.clipcrop.points.desktop').write_text(
+        '[Desktop Entry]\nType=Application\nVersion=1.0\nName=ClipCrop Points\n'
+        'Comment=A small peer-to-peer video commons\nExec=clipcrop-points\nIcon=clipcrop-points\n'
         'Terminal=false\nCategories=AudioVideo;Video;Network;\nStartupNotify=true\n')
     icons = deb_root / 'usr/share/icons/hicolor/scalable/apps'; icons.mkdir(parents=True)
-    shutil.copyfile(root / 'assets/icon.svg', icons / 'clipcrop.svg')
-    doc_dir = deb_root / 'usr/share/doc/clipcrop'; doc_dir.mkdir(parents=True)
+    shutil.copyfile(root / 'assets/icon.svg', icons / 'clipcrop-points.svg')
+    doc_dir = deb_root / 'usr/share/doc/clipcrop-points'; doc_dir.mkdir(parents=True)
     shutil.copyfile(root / 'LICENSE', doc_dir / 'copyright')
     shutil.copyfile(folder / 'LINUX.md', doc_dir / 'README.md')
 
@@ -244,7 +244,7 @@ try:
         'gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav')
     installed_size = sum(path.stat().st_size for path in deb_root.rglob('*') if path.is_file()) // 1024
     control = (
-        f'Package: clipcrop\nVersion: {version}\nSection: video\nPriority: optional\n'
+        f'Package: clipcrop-points\nVersion: {version}\nSection: video\nPriority: optional\n'
         f'Architecture: amd64\nInstalled-Size: {installed_size}\n'
         f'Depends: {dependencies}\nMaintainer: ClipCrop contributors <clipcrop@localhost>\n'
         'Description: A small peer-to-peer video commons\n'
@@ -266,7 +266,7 @@ try:
             with tarfile.open(fileobj=compressed, mode='w', format=tarfile.GNU_FORMAT) as archive:
                 for path in sorted(deb_root.iterdir()):
                     archive.add(path, arcname='./' + path.name, filter=filter_tar)
-    deb_path = work / f'clipcrop_{version}_amd64.deb'
+    deb_path = work / f'clipcrop-points_{version}_amd64.deb'
     with deb_path.open('wb') as deb:
         deb.write(b'!<arch>\n')
         for name, value in [('debian-binary', b'2.0\n'), ('control.tar.gz', control_buffer.getvalue()), ('data.tar.gz', data_path)]:
@@ -286,7 +286,7 @@ try:
     final_folder = output_parent / 'linux-x86_64'
     if final_folder.exists():
         # Refuse to replace a folder in which someone already ran a portable profile.
-        if (final_folder / 'clipcrop-data').exists():
+        if any((final_folder / name).exists() for name in ('clipcrop-data', 'clipcrop-points-data')):
             raise SystemExit('dist/linux-x86_64 contains a profile; move it out before replacing the package')
         shutil.rmtree(final_folder)
     shutil.move(str(folder), final_folder)

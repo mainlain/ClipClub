@@ -96,7 +96,7 @@ inventory.sort(key=lambda entry: (entry["name"], entry["version"]))
 PY
 
 if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == *apple-darwin ) ]]; then
-  app_directory="$dist_directory/ClipCrop.app"
+  app_directory="$dist_directory/ClipCrop Points.app"
   mkdir -p "$app_directory/Contents/MacOS" "$app_directory/Contents/Resources"
   cp "$dist_directory/clipcrop" "$app_directory/Contents/MacOS/clipcrop"
   cp LICENSE THIRD_PARTY.md "$app_directory/Contents/Resources/"
@@ -111,9 +111,9 @@ if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == *a
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>ClipCrop</string>
-  <key>CFBundleDisplayName</key><string>ClipCrop</string>
-  <key>CFBundleIdentifier</key><string>local.clipcrop</string>
+  <key>CFBundleName</key><string>ClipCrop Points</string>
+  <key>CFBundleDisplayName</key><string>ClipCrop Points</string>
+  <key>CFBundleIdentifier</key><string>local.clipcrop.points</string>
   <key>CFBundleExecutable</key><string>clipcrop</string>
   <key>CFBundleIconFile</key><string>ClipCrop.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>

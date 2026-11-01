@@ -1,4 +1,6 @@
-# ClipCrop
+# ClipCrop Points
+
+Recovered v0.1.0 points fork. See [RECOVERY.md](RECOVERY.md) for source provenance, verification and the preserved Git baseline. This fork uses separate profile and application identities so it can coexist with the cryptocurrency project.
 
 A minimalist Rust desktop app for sharing short videos through BitTorrent and spending points to rate them. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 
@@ -6,15 +8,15 @@ This is a working experimental implementation. Points are a signed peer-to-peer 
 
 ## Run
 
-On macOS, open `dist/ClipCrop.app`, or run the executable:
+On macOS, open `dist/ClipCrop Points.app`, or run the executable:
 
 ```sh
 ./dist/clipcrop
 ```
 
-On macOS, your profile is stored in `~/Library/Application Support/ClipCrop`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop`, defaulting to `~/.local/share/clipcrop`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
+On macOS, your profile is stored in `~/Library/Application Support/ClipCrop Points`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-points-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
 
-The profile contains your private identity, points history, settings, watched history, uploaded files, and cached videos. Back up the entire profile directory; creating a different identity starts a new 100-point profile. Do not share `identity.key` with other people. If you used an earlier macOS or Linux release with an adjacent `clipcrop-data` folder, quit the app and move that folder's contents into the new profile location before reopening, or launch with `--data-dir` pointing to the existing folder. Old folders are not searched automatically, since that would access Downloads when the app is located there. Do not overwrite an existing profile when moving data.
+The profile contains your private identity, points history, settings, watched history, uploaded files, and cached videos. Back up the entire profile directory; creating a different identity starts a new 100-point profile. This fork starts a separate profile and imports no existing application data. To recover personal data from the original points release, use `--data-dir` with a separate copy of a verified version-1 points profile. Cryptocurrency profiles use a different state format and cannot be opened by this version. Do not share `identity.key` with other people.
 
 The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. It does not install a background service.
 
@@ -78,17 +80,17 @@ The embedded UI is served only on `127.0.0.1`, with a fresh per-process access t
 On the same local network, open two instances with separate data directories and ports. mDNS discovery should connect them automatically:
 
 ```sh
-./dist/clipcrop --data-dir /tmp/clipcrop-alice --p2p-port 42831 --torrent-port 42832
-./dist/clipcrop --data-dir /tmp/clipcrop-bob --p2p-port 42833 --torrent-port 42834
+./dist/clipcrop --data-dir /tmp/clipcrop-alice --p2p-port 42931 --torrent-port 42932
+./dist/clipcrop --data-dir /tmp/clipcrop-bob --p2p-port 42933 --torrent-port 42934
 ```
 
 The commands run in separate terminals. For peers on different networks, save the other peer's full reachable multiaddress in Settings, for example:
 
 ```text
-/ip4/192.168.1.20/tcp/42831/p2p/<other-peer-id>
+/ip4/192.168.1.20/tcp/42931/p2p/<other-peer-id>
 ```
 
-Use a reachable public address when crossing networks. The default peer mesh port is TCP **42831**; the default torrent listening port is TCP **42832**. The HTTP interface binds an ephemeral loopback port by default. CLI options are `--data-dir PATH`, `--p2p-port PORT`, `--torrent-port PORT`, `--http-port PORT`, and `--headless`. A data directory is locked to prevent two processes from spending through the same local profile at once.
+Use a reachable public address when crossing networks. The default peer mesh port is TCP **42931**; the default torrent listening port is TCP **42932**. The HTTP interface binds an ephemeral loopback port by default. CLI options are `--data-dir PATH`, `--p2p-port PORT`, `--torrent-port PORT`, `--http-port PORT`, and `--headless`. A data directory is locked to prevent two processes from spending through the same local profile at once.
 
 ## Build
 

@@ -25,7 +25,7 @@ fn macos_data_dir(home: Option<std::ffi::OsString>) -> Result<PathBuf> {
     let home = PathBuf::from(home.context("Cannot locate home folder; use --data-dir")?);
     anyhow::ensure!(home.is_absolute(), "Invalid home folder; use --data-dir");
     // Never inspect a sibling profile: even checking Downloads can trigger a prompt.
-    Ok(home.join("Library/Application Support/ClipCrop"))
+    Ok(home.join("Library/Application Support/ClipCrop Points"))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -35,14 +35,14 @@ fn linux_data_dir(
 ) -> Result<PathBuf> {
     // Ignore empty or relative XDG paths rather than writing beside the app.
     if let Some(directory) = data_home.map(PathBuf::from).filter(|p| p.is_absolute()) {
-        return Ok(directory.join("clipcrop"));
+        return Ok(directory.join("clipcrop-points"));
     }
     let directory = PathBuf::from(user_home.context("Cannot locate home folder; use --data-dir")?);
     anyhow::ensure!(
         directory.is_absolute(),
         "Invalid home folder; use --data-dir"
     );
-    Ok(directory.join(".local/share/clipcrop"))
+    Ok(directory.join(".local/share/clipcrop-points"))
 }
 
 fn default_data_dir() -> Result<PathBuf> {
@@ -58,7 +58,7 @@ fn default_data_dir() -> Result<PathBuf> {
     {
         let exe = std::env::current_exe()?;
         let parent = exe.parent().context("Cannot locate executable folder")?;
-        Ok(parent.join("clipcrop-data"))
+        Ok(parent.join("clipcrop-points-data"))
     }
 }
 
@@ -69,8 +69,8 @@ fn parse_options(
     let mut root = None;
     let mut options = Options {
         root: PathBuf::new(),
-        p2p: 42831,
-        torrent: 42832,
+        p2p: 42931,
+        torrent: 42932,
         http: 0,
         headless: false,
     };
@@ -79,7 +79,7 @@ fn parse_options(
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Clipcrop — a peer-to-peer video commons\n\nOptions:\n  --data-dir PATH       Use a specific profile folder\n  --p2p-port PORT       Peer mesh TCP port (42831)\n  --torrent-port PORT   BitTorrent TCP port (42832)\n  --http-port PORT      Local interface port (random by default)\n  --headless            Serve the local interface without a desktop window"
+                    "Clipcrop — a peer-to-peer video commons\n\nOptions:\n  --data-dir PATH       Use a specific profile folder\n  --p2p-port PORT       Peer mesh TCP port (42931)\n  --torrent-port PORT   BitTorrent TCP port (42932)\n  --http-port PORT      Local interface port (random by default)\n  --headless            Serve the local interface without a desktop window"
                 );
                 return Ok(None);
             }
@@ -181,7 +181,7 @@ fn desktop(
     };
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Clipcrop")
+        .with_title("ClipCrop Points")
         .with_inner_size(LogicalSize::new(480.0, 620.0))
         .with_min_inner_size(LogicalSize::new(360.0, 480.0))
         .build(&event_loop)?;
@@ -260,7 +260,7 @@ mod tests {
         let options = parse_options([], || linux_data_dir(Some(data.path().into()), None))
             .unwrap()
             .unwrap();
-        assert_eq!(options.root, data.path().join("clipcrop"));
+        assert_eq!(options.root, data.path().join("clipcrop-points"));
         assert!(!options.root.exists(), "Parsing must not create a profile");
     }
 
@@ -270,7 +270,7 @@ mod tests {
         for data in [None, Some("".into()), Some("relative-data".into())] {
             assert_eq!(
                 linux_data_dir(data, Some(user.path().into())).unwrap(),
-                user.path().join(".local/share/clipcrop")
+                user.path().join(".local/share/clipcrop-points")
             );
         }
     }
@@ -291,7 +291,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             options.root,
-            home.path().join("Library/Application Support/ClipCrop")
+            home.path()
+                .join("Library/Application Support/ClipCrop Points")
         );
         assert!(!options.root.exists(), "Parsing must not create a profile");
     }
