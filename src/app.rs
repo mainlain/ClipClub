@@ -1,6 +1,7 @@
 use crate::{
     core::{
-        Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, MICROS_PER_POINT, RatingReceipt, Settings, Store,
+        Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, MAX_ROLL_WAGER_MICROPOINTS, MICROS_PER_POINT,
+        RatingReceipt, Settings, Store, roll_multiplier,
     },
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
@@ -11,6 +12,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use libp2p::identity::Keypair;
 use librqbit::ManagedTorrent;
 use rand::seq::IteratorRandom;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -29,6 +31,8 @@ pub struct App {
     identity: Keypair,
     engine: TorrentEngine,
     downloader: TorrentEngine,
+    roll_downloader: TorrentEngine,
+    roll_preparation: Mutex<()>,
     probe: PathBuf,
     runtime: Mutex<Runtime>,
     /// Serialize user mutations across disk and network operations.
@@ -44,6 +48,23 @@ struct Presence {
     endpoint: Option<SocketAddr>,
     seen: Instant,
 }
+#[derive(Clone, Serialize)]
+struct RollResult {
+    id: String,
+    multiplier: u8,
+    wager: f64,
+    payout: f64,
+    balance: f64,
+    clip: Option<Clip>,
+    message: Option<String>,
+}
+
+struct RollClip {
+    clip: Clip,
+    source: Option<PathBuf>,
+    peers: Vec<SocketAddr>,
+}
+
 #[derive(Default)]
 struct Runtime {
     peers: BTreeMap<String, Presence>,
@@ -58,6 +79,30 @@ struct Runtime {
     notice: Option<String>,
     replaying: bool,
     replay_requested: bool,
+    roll: Option<RollResult>,
+    roll_cancel: Option<CancellationToken>,
+    roll_file: Option<String>,
+}
+
+fn wager_micropoints(wager: f64) -> Result<u64> {
+    let scaled = wager * MICROS_PER_POINT as f64;
+    ensure!(
+        wager.is_finite() && wager > 0.0 && scaled >= 1.0,
+        "Wager at least 0.000001 points"
+    );
+    ensure!(
+        scaled < MAX_ROLL_WAGER_MICROPOINTS as f64,
+        "Wager is too large"
+    );
+    ensure!(
+        (scaled - scaled.round()).abs() <= 0.000001,
+        "Use at most six decimal places for your wager"
+    );
+    Ok(scaled.round() as u64)
+}
+
+fn roll_rating(average: f64) -> u8 {
+    average.round().clamp(1.0, 9.0) as u8
 }
 
 pub fn prepared(clip: &Clip) -> Result<PreparedTorrent> {
@@ -76,8 +121,9 @@ impl App {
         tokio::fs::create_dir_all(root.join("clips")).await?;
         tokio::fs::create_dir_all(root.join("cache")).await?;
         tokio::fs::create_dir_all(root.join("incoming")).await?;
+        tokio::fs::create_dir_all(root.join("roll-cache")).await?;
         // Cache has no identity or wallet state and is deliberately session-local.
-        for folder in ["cache", "incoming"] {
+        for folder in ["cache", "incoming", "roll-cache"] {
             let mut files = tokio::fs::read_dir(root.join(folder)).await?;
             while let Some(file) = files.next_entry().await? {
                 if file.file_type().await?.is_file() {
@@ -94,6 +140,7 @@ impl App {
         let engine = TorrentEngine::new(root.join("clips"), torrent_port).await?;
         let torrent_port = engine.port().unwrap_or(torrent_port);
         let downloader = TorrentEngine::downloader(root.join("cache")).await?;
+        let roll_downloader = TorrentEngine::downloader(root.join("roll-cache")).await?;
         let (mesh, mut events) = peer::start(
             identity.clone(),
             p2p_port,
@@ -107,6 +154,8 @@ impl App {
             identity,
             engine,
             downloader,
+            roll_downloader,
+            roll_preparation: Mutex::new(()),
             probe,
             runtime: Mutex::new(Runtime::default()),
             mutation: Mutex::new(()),
@@ -354,7 +403,7 @@ impl App {
             let stats = handle.stats();
             json!({"id":id,"downloaded":stats.progress_bytes,"total":stats.total_bytes})
         });
-        json!({"profile_id":local,"balance":store.balance(local),"earned":earned,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
+        json!({"profile_id":local,"balance":store.balance(local),"earned":earned,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
     }
     pub async fn upload(&self, filename: String, bytes: Vec<u8>) -> Result<Value> {
         let _guard = self.mutation.lock().await;
@@ -577,6 +626,189 @@ impl App {
         self.wake.notify_one();
         Ok(json!({"score":score,"reward_per_seeder":reward,"seeders":recipients}))
     }
+    pub async fn roll(self: &Arc<Self>, wager: f64) -> Result<Value> {
+        let wager = wager_micropoints(wager)?;
+        let _guard = self.mutation.lock().await;
+        let mut store = self.store.lock().await;
+        let receipt = store.roll(&self.identity, wager)?;
+        let payload = receipt
+            .payload
+            .roll
+            .as_ref()
+            .context("Missing roll result")?;
+        let multiplier = roll_multiplier(payload.ticket)?;
+        let mut rt = self.runtime.lock().await;
+        // Availability never affects the draw, and watched history does not filter Roll.
+        let stats = store.clip_stats();
+        let choice = (multiplier > 0)
+            .then(|| {
+                store
+                    .data
+                    .catalog
+                    .values()
+                    .filter(|clip| {
+                        stats
+                            .get(clip.id.as_str())
+                            .and_then(|stats| stats.average_rating())
+                            .is_some_and(|average| roll_rating(average) == multiplier)
+                    })
+                    .filter_map(|clip| {
+                        let source = if rt.permanent.contains_key(&clip.id) {
+                            Some(self.root.join("clips").join(clip.filename()))
+                        } else if rt.ready.contains(&clip.id) || rt.temporary.contains_key(&clip.id)
+                        {
+                            Some(self.root.join("cache").join(clip.filename()))
+                        } else if rt.roll_file.as_ref() == Some(&clip.id) {
+                            Some(self.root.join("roll-cache").join(clip.filename()))
+                        } else {
+                            None
+                        };
+                        let peers: Vec<_> = rt
+                            .peers
+                            .values()
+                            .filter(|peer| {
+                                peer.seen.elapsed() < Duration::from_secs(65)
+                                    && peer.seeded.contains(&clip.id)
+                            })
+                            .filter_map(|peer| peer.endpoint)
+                            .collect();
+                        (source.is_some() || !peers.is_empty()).then(|| RollClip {
+                            clip: clip.clone(),
+                            source,
+                            peers,
+                        })
+                    })
+                    .choose(&mut rand::rng())
+            })
+            .flatten();
+        let result = RollResult {
+            id: receipt.id.clone(),
+            multiplier,
+            wager: wager as f64 / MICROS_PER_POINT as f64,
+            payout: payload.payout_micropoints()? as f64 / MICROS_PER_POINT as f64,
+            balance: store.balance(&store.data.profile_id),
+            clip: None,
+            message: Some(if multiplier == 0 {
+                "No clip on a 0. Your wager was lost.".into()
+            } else if choice.is_some() {
+                format!("Preparing a rating {multiplier} clip…")
+            } else {
+                format!("No rating {multiplier} clips are available yet. Your payout is saved.")
+            }),
+        };
+        if let Some(cancel) = rt.roll_cancel.take() {
+            cancel.cancel();
+        }
+        let cancel = self.shutdown.child_token();
+        rt.roll_cancel = Some(cancel.clone());
+        rt.roll = Some(result.clone());
+        drop(rt);
+        drop(store);
+        if let Some(choice) = choice {
+            let app = self.clone();
+            let id = result.id.clone();
+            tokio::spawn(async move {
+                app.prepare_roll(id, choice, cancel).await;
+            });
+        }
+        if let Err(error) = self.mesh.receipt(receipt).await {
+            self.notice(&format!(
+                "Roll saved locally; network delivery will retry: {error}"
+            ))
+            .await;
+        }
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn prepare_roll(&self, id: String, choice: RollClip, cancel: CancellationToken) {
+        // Roll uses its own bounded cache so Rate cleanup cannot delete a playing clip.
+        let _guard = tokio::select! {
+            _ = cancel.cancelled() => return,
+            guard = self.roll_preparation.lock() => guard,
+        };
+        if cancel.is_cancelled() {
+            return;
+        }
+        let path = self.root.join("roll-cache").join(choice.clip.filename());
+        let preparation = async {
+            let mut files = tokio::fs::read_dir(self.root.join("roll-cache")).await?;
+            while let Some(file) = files.next_entry().await? {
+                if file.path() != path && file.file_type().await?.is_file() {
+                    let _ = tokio::fs::remove_file(file.path()).await;
+                }
+            }
+            let copied = if let Some(source) = &choice.source {
+                if source == &path {
+                    true
+                } else {
+                    tokio::fs::copy(source, &path).await.is_ok()
+                }
+            } else {
+                false
+            };
+            if !copied {
+                ensure!(!choice.peers.is_empty(), "Clip is no longer available");
+                let handle = self
+                    .roll_downloader
+                    .add(&prepared(&choice.clip)?, &self.root.join("roll-cache"), choice.peers, false)
+                    .await?;
+                let download = tokio::select! {
+                    _ = cancel.cancelled() => Err(anyhow::anyhow!("Roll superseded")),
+                    result = tokio::time::timeout(Duration::from_secs(90), self.roll_downloader.wait(&handle)) => {
+                        match result {
+                            Ok(result) => result,
+                            Err(error) => Err(anyhow::Error::new(error).context("Roll clip download timed out")),
+                        }
+                    }
+                };
+                let removal = self.roll_downloader.remove(&handle).await;
+                download?;
+                removal?;
+            }
+            ensure!(!cancel.is_cancelled(), "Roll superseded");
+            let limits = Limits::default();
+            let video = tokio::select! {
+                _ = cancel.cancelled() => return Err(anyhow::anyhow!("Roll superseded")),
+                video = media::validate_video(&path, &limits, &self.probe) => video?,
+            };
+            ensure!(video.id == choice.clip.id, "Roll clip content hash changed");
+            let bytes = tokio::fs::read(&path).await?;
+            ensure!(
+                torrent::create_torrent(&bytes, &choice.clip.extension)?.info_hash == choice.clip.info_hash,
+                "Roll clip torrent metadata changed"
+            );
+            let mut verified = choice.clip;
+            verified.width = video.width;
+            verified.height = video.height;
+            verified.duration_secs = video.duration_secs;
+            self.store.lock().await.add_verified_clip(verified.clone())?;
+            Ok::<_, anyhow::Error>(verified)
+        }
+        .await;
+        let mut rt = self.runtime.lock().await;
+        if cancel.is_cancelled() {
+            return;
+        }
+        if rt.roll.as_ref().is_some_and(|result| result.id == id) {
+            match preparation {
+                Ok(clip) => {
+                    rt.roll_file = Some(clip.id.clone());
+                    let result = rt.roll.as_mut().unwrap();
+                    result.clip = Some(clip);
+                    result.message = None;
+                }
+                Err(error) => {
+                    rt.roll.as_mut().unwrap().message = Some(format!(
+                        "Could not prepare this clip: {error}. Your payout is saved."
+                    ));
+                    rt.roll_file = None;
+                    drop(rt);
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+            }
+        }
+    }
+
     pub async fn settings(&self, settings: Settings) -> Result<()> {
         settings.validate()?;
         for address in &settings.bootstrap_peers {
@@ -591,7 +823,14 @@ impl App {
         let store = self.store.lock().await;
         let clip = store.data.catalog.get(id).context("Unknown clip")?;
         let rt = self.runtime.lock().await;
-        let path = if store.data.library.contains_key(id) {
+        let path = if rt
+            .roll
+            .as_ref()
+            .and_then(|result| result.clip.as_ref())
+            .is_some_and(|clip| clip.id == id)
+        {
+            self.root.join("roll-cache").join(clip.filename())
+        } else if store.data.library.contains_key(id) {
             self.root.join("clips").join(clip.filename())
         } else {
             ensure!(
@@ -707,6 +946,46 @@ impl App {
         self.engine.stop().await;
         let _ = self.mesh.shutdown().await;
         self.downloader.stop().await;
+        self.roll_downloader.stop().await;
         let _ = self.store.lock().await.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roll_wagers_use_exact_point_precision_and_reject_invalid_amounts() {
+        assert_eq!(wager_micropoints(1.0).unwrap(), 1_000_000);
+        assert_eq!(wager_micropoints(0.000001).unwrap(), 1);
+        assert_eq!(wager_micropoints(1.234567).unwrap(), 1_234_567);
+        assert_eq!(wager_micropoints(0.1 + 0.2).unwrap(), 300_000);
+        for invalid in [
+            0.0,
+            -1.0,
+            0.0000001,
+            1.0000001,
+            f64::NAN,
+            f64::INFINITY,
+            f64::MAX,
+        ] {
+            assert!(wager_micropoints(invalid).is_err(), "Accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn roll_rating_uses_nearest_integer_tiers() {
+        for (average, tier) in [
+            (1.0, 1),
+            (1.49, 1),
+            (1.5, 2),
+            (4.49, 4),
+            (4.5, 5),
+            (8.5, 9),
+            (9.0, 9),
+        ] {
+            assert_eq!(roll_rating(average), tier);
+        }
     }
 }

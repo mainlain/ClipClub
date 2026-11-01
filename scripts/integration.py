@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import json
 import math
+from decimal import Decimal
 from pathlib import Path
 import re
 import signal
@@ -106,7 +107,7 @@ def assert_http_error(action, contains=None):
         action()
     except urllib.error.HTTPError as error:
         body = error.read().decode()
-        assert error.code in (400, 401, 403, 413), (error.code, body)
+        assert error.code in (400, 401, 403, 413, 422), (error.code, body)
         if contains:
             assert contains.lower() in body.lower(), body
         return
@@ -212,10 +213,113 @@ try:
     assert abs(restored['points_earned'] - 3.726779) < .000001
     wait_for(lambda: bool(bob.state()['queue']), 'queue starts again after restart')
     assert all(item['id'] != current['id'] for item in bob.state()['queue'])
+
+    # Rejected wagers leave both the wallet and the last roll untouched.
+    before_roll = bob.state()
+    for wager in [0, -1, before_roll['balance'] + 1, .0000001]:
+        assert_http_error(lambda wager=wager: bob.request('roll', {'wager':wager}))
+        unchanged = bob.state()
+        assert unchanged['balance'] == before_roll['balance']
+        assert unchanged['roll'] == before_roll['roll']
+    assert_http_error(lambda: bob.request('roll', {}))
+    assert_http_error(lambda: bob.request('roll', {'wager':'1'}))
+
+    # Exercise real random draws. Core tests exhaust all 1023 tickets; here small
+    # wagers let the HTTP path reach loss, missing-tier, and watched/owned playback.
+    # A tier-5 draw has probability 16/1023; 500 attempts keep failure below 0.04%.
+    wallet = Decimal(str(before_roll['balance']))
+    wager = Decimal('.001')
+    seen_zero = seen_missing = seen_owned = False
+    roll_ids = set()
+    for _ in range(500):
+        result = bob.request('roll', {'wager':float(wager)})
+        multiplier = result['multiplier']
+        assert isinstance(multiplier, int) and 0 <= multiplier <= 9, result
+        assert Decimal(str(result['wager'])) == wager, result
+        assert Decimal(str(result['payout'])) == wager * multiplier, result
+        wallet += wager * (multiplier - 1)
+        assert Decimal(str(result['balance'])) == wallet, result
+        assert result['id'] not in roll_ids, 'A new roll reused an existing receipt'
+        roll_ids.add(result['id'])
+        assert bob.state()['roll']['id'] == result['id']
+        if multiplier == 0:
+            assert result['clip'] is None, result
+            seen_zero = True
+        elif multiplier == 5:
+            # Bob rated this clip before promoting it: both watched and owned
+            # content must be eligible, even though Rate excludes it.
+            playable = wait_for(lambda: bob.state()['roll']['clip'], 'roll clip becomes playable')
+            assert playable['id'] == current['id'], playable
+            req = urllib.request.Request(bob.url + '/api/video/' + playable['id'], headers={'x-clipcrop-token':bob.token, 'Range':'bytes=0-15'})
+            with urllib.request.urlopen(req) as response:
+                assert response.status == 206 and len(response.read()) == 16
+            seen_owned = True
+        else:
+            assert result['clip'] is None and result['message'], result
+            seen_missing = True
+        if seen_zero and seen_missing and seen_owned:
+            break
+    assert seen_zero and seen_missing and seen_owned, 'Random roll sampling did not reach all integration cases; rerun the smoke test'
+    after_roll = bob.state()
+    assert Decimal(str(after_roll['balance'])) == wallet
+    assert after_roll['temporary_seeds'] == 0, 'Roll unexpectedly started temporary rating seeds'
+    rolled_library = next(row for row in after_roll['library'] if row['clip']['id'] == current['id'])
+    assert rolled_library['rating_count'] == 2 and rolled_library['average_rating'] == 5
+    assert all(item['id'] != current['id'] for item in after_roll['queue'])
+
+    # Gossip validates the roll chain, then accepts a rating following that chain.
+    def peer_has_rolls():
+        saved = json.loads((alice.root / 'state.json').read_text())
+        return roll_ids.issubset({receipt['id'] for receipt in saved['receipts']})
+    wait_for(peer_has_rolls, 'peer accepts mixed rating and roll history', 60)
+    bob.request('session', {'active':True})
+    next_clip = wait_for(lambda: bob.state()['queue'], 'clip ready for rating after rolls')[0]
+    alice_balance = alice.state()['balance']
+    bob.request('rate', {'id':next_clip['id'], 'score':1})
+    wallet -= 1
+    wait_for(lambda: abs(alice.state()['balance'] - alice_balance - 1) < .000001, 'peer accepts rating after roll receipts')
+    bob.request('session', {'active':False})
+    assert Decimal(str(bob.state()['balance'])) == wallet
+    bob.stop()
+    bob.start()
+    assert Decimal(str(bob.state()['balance'])) == wallet, 'Roll wallet did not survive restart'
+    assert bob.identity == bob_identity
+
+    # Charlie watched the tier-5 clip, ended Rate, and never uploaded it. Roll
+    # must fetch it again from a peer using its separate validated download cache.
+    charlie_before = charlie.state()
+    charlie_watched = json.loads((charlie.root / 'state.json').read_text())['watched']
+    assert current['id'] in charlie_watched
+    assert not any(row['clip']['id'] == current['id'] for row in charlie_before['library'])
+    clip_filename = f"{current['id']}.{current['extension']}"
+    assert not (charlie.root / 'cache' / clip_filename).exists()
+    assert not (charlie.root / 'roll-cache' / clip_filename).exists()
+    for _ in range(500):
+        remote_roll = charlie.request('roll', {'wager':.001})
+        if remote_roll['multiplier'] == 5:
+            break
+    else:
+        raise AssertionError('Random roll sampling did not reach watched remote tier-5 playback; rerun the smoke test')
+    remote_clip = wait_for(lambda: charlie.state()['roll']['clip'], 'watched roll clip downloads from a peer', 60)
+    assert remote_clip['id'] == current['id'], remote_clip
+    roll_cache = charlie.root / 'roll-cache' / clip_filename
+    assert roll_cache.is_file(), 'Roll did not prepare its separate cache file'
+    assert hashlib.sha256(roll_cache.read_bytes()).hexdigest() == current['id']
+    req = urllib.request.Request(charlie.url + '/api/video/' + current['id'], headers={'x-clipcrop-token':charlie.token})
+    with urllib.request.urlopen(req) as response:
+        assert response.status == 200
+        assert hashlib.sha256(response.read()).hexdigest() == current['id']
+    charlie_after = charlie.state()
+    assert charlie_after['roll']['id'] == remote_roll['id']
+    assert charlie_after['library'] == charlie_before['library']
+    assert charlie_after['temporary_seeds'] == charlie_before['temporary_seeds'] == 0
+    assert not charlie_after['session']
+    assert json.loads((charlie.root / 'state.json').read_text())['watched'] == charlie_watched
+
     # Duplicate-profile lock prevents simultaneous spending from one profile.
     duplicate = subprocess.run([str(BINARY),'--headless','--data-dir',str(bob.root)], capture_output=True, text=True, timeout=5)
     assert duplicate.returncode != 0 and 'already open' in duplicate.stderr
-    print('PASS: real three-peer mesh,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,zero passes,100-point starts,lone/multiple payouts,dedup,promotion,session cleanup,restart,portable profile relocation,and profile lock.')
+    print('PASS: real three-peer mesh,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,zero passes,100-point starts,lone/multiple payouts,dedup,promotion,session cleanup,restart,portable profile relocation,roll wager validation and payouts,watched/owned roll playback,validated watched remote roll downloads,mixed roll/rating gossip,roll wallet persistence,and profile lock.')
     print('Integration logs:', WORK)
 finally:
     for client in reversed(PROCESSES):

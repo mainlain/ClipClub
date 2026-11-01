@@ -58,6 +58,7 @@ pub async fn serve(
         .route("/api/state", get(status))
         .route("/api/upload", post(upload))
         .route("/api/rate", post(rate))
+        .route("/api/roll", post(roll))
         .route("/api/session", post(session))
         .route("/api/settings", post(settings))
         .route("/api/remove/{id}", post(remove))
@@ -157,6 +158,14 @@ struct Rate {
 }
 async fn rate(State(state): State<HttpState>, Json(input): Json<Rate>) -> ApiResult {
     Ok(Json(state.app.rate(&input.id, input.score).await?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Roll {
+    wager: f64,
+}
+async fn roll(State(state): State<HttpState>, Json(input): Json<Roll>) -> ApiResult {
+    Ok(Json(state.app.roll(input.wager).await?))
 }
 #[derive(Deserialize)]
 struct Session {

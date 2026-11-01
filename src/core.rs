@@ -10,6 +10,7 @@ use libp2p::{
     PeerId,
     identity::{Keypair, PublicKey},
 };
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -27,6 +28,9 @@ pub const MAX_LIBRARY_FILES: usize = 100;
 pub const MAX_CATALOG_CLIPS: usize = 10_000;
 pub const MICROS_PER_POINT: u64 = 1_000_000;
 pub const INITIAL_MICROPOINTS: u64 = 100 * MICROS_PER_POINT;
+pub const ROLL_TICKETS: u16 = 1023;
+pub const MAX_ROLL_WAGER_MICROPOINTS: u64 = u64::MAX / 9;
+const ROLL_CLIP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TORRENT_BYTES: usize = 256 * 1024;
 const MAX_LEDGER_RECEIPTS: usize = 100_000;
@@ -192,6 +196,39 @@ impl ClipStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RollPayload {
+    pub wager_micropoints: u64,
+    pub ticket: u16,
+}
+
+impl RollPayload {
+    pub fn payout_micropoints(&self) -> Result<u64> {
+        ensure!(
+            self.wager_micropoints > 0 && self.wager_micropoints <= MAX_ROLL_WAGER_MICROPOINTS,
+            "Wager must be positive and within the points limit"
+        );
+        self.wager_micropoints
+            .checked_mul(u64::from(roll_multiplier(self.ticket)?))
+            .context("Roll payout exceeds the points limit")
+    }
+}
+
+/// Exact integer sampling: the ten outcomes have weights 512, 256, ..., 1.
+/// A uniform ticket therefore gives P(k) = 2^(-k) * 512/1023.
+pub fn roll_multiplier(ticket: u16) -> Result<u8> {
+    ensure!(ticket < ROLL_TICKETS, "Invalid roll ticket");
+    let mut remaining = ticket;
+    for multiplier in 0..=9 {
+        let weight = 512 >> multiplier;
+        if remaining < weight {
+            return Ok(multiplier);
+        }
+        remaining -= weight;
+    }
+    unreachable!("All valid tickets fall into one of the ten buckets")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RatingPayload {
     pub sender: String,
     pub clip_id: String,
@@ -202,6 +239,9 @@ pub struct RatingPayload {
     pub total_users: usize,
     pub sequence: u64,
     pub previous: Option<String>,
+    // Omit this field on ratings to preserve the bytes of all legacy signatures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll: Option<RollPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,6 +298,16 @@ impl RatingReceipt {
             self.payload.seeders.len(),
             self.payload.total_users,
         )?;
+        if let Some(roll) = &self.payload.roll {
+            ensure!(
+                self.payload.clip_id == ROLL_CLIP_ID
+                    && self.payload.score == 0
+                    && self.payload.seeders.is_empty()
+                    && self.payload.total_users == 3,
+                "Invalid roll receipt fields"
+            );
+            roll.payout_micropoints()?;
+        }
         if let Some(previous) = &self.payload.previous {
             validate_hex(previous, 32, "previous receipt ID")?;
         }
@@ -596,6 +646,9 @@ impl Store {
         let mut stats = BTreeMap::<&str, ClipStats>::new();
         for receipt in &self.data.receipts {
             let payload = &receipt.payload;
+            if payload.roll.is_some() {
+                continue;
+            }
             let entry = stats.entry(&payload.clip_id).or_default();
             if payload.score > 0 {
                 entry.rating_count += 1;
@@ -619,6 +672,16 @@ impl Store {
     pub fn balance_micropoints(&self, identity: &str) -> u64 {
         let mut balance = i128::from(INITIAL_MICROPOINTS);
         for receipt in &self.data.receipts {
+            if let Some(roll) = &receipt.payload.roll {
+                if receipt.payload.sender == identity {
+                    balance -= i128::from(roll.wager_micropoints);
+                    balance += i128::from(
+                        roll.payout_micropoints()
+                            .expect("Stored rolls have already passed validation"),
+                    );
+                }
+                continue;
+            }
             if receipt.payload.sender == identity {
                 balance -= i128::from(u64::from(receipt.payload.score) * MICROS_PER_POINT);
             }
@@ -647,15 +710,22 @@ impl Store {
             "Ledger is full"
         );
         let payload = &receipt.payload;
-        ensure!(
-            self.data.catalog.contains_key(&payload.clip_id),
-            "Rating references an unknown clip"
-        );
+        if payload.roll.is_none() {
+            ensure!(
+                self.data.catalog.contains_key(&payload.clip_id),
+                "Rating references an unknown clip"
+            );
+            ensure!(
+                !self.data.receipts.iter().any(|r| r.payload.roll.is_none()
+                    && r.payload.sender == payload.sender
+                    && r.payload.clip_id == payload.clip_id),
+                "This identity has already rated this clip"
+            );
+        }
         ensure!(
             !self.data.receipts.iter().any(|r| r.id == receipt.id),
             "Receipt has already been applied"
         );
-        ensure!(!self.data.receipts.iter().any(|r| r.payload.sender == payload.sender && r.payload.clip_id == payload.clip_id), "This identity has already rated this clip");
         let previous = self
             .data
             .receipts
@@ -668,11 +738,20 @@ impl Store {
                 && payload.previous.as_deref() == previous.map(|r| r.id.as_str()),
             "Receipt is out of order or conflicts with the sender's history"
         );
-        ensure!(
-            self.balance_micropoints(&payload.sender)
-                >= u64::from(payload.score) * MICROS_PER_POINT,
-            "Insufficient points"
-        );
+        let balance = self.balance_micropoints(&payload.sender);
+        if let Some(roll) = &payload.roll {
+            let remainder = balance
+                .checked_sub(roll.wager_micropoints)
+                .context("Insufficient points")?;
+            remainder
+                .checked_add(roll.payout_micropoints()?)
+                .context("Roll balance exceeds the points limit")?;
+        } else {
+            ensure!(
+                balance >= u64::from(payload.score) * MICROS_PER_POINT,
+                "Insufficient points"
+            );
+        }
         Ok(())
     }
 
@@ -682,7 +761,7 @@ impl Store {
         }
         self.validate_receipt(&receipt)?;
         let before = self.data.clone();
-        if receipt.payload.sender == self.data.profile_id {
+        if receipt.payload.roll.is_none() && receipt.payload.sender == self.data.profile_id {
             self.data.watched.insert(receipt.payload.clip_id.clone());
         }
         self.data.receipts.push(receipt);
@@ -727,6 +806,7 @@ impl Store {
             total_users: total_users.max(3),
             sequence: previous.map_or(1, |r| r.payload.sequence.saturating_add(1)),
             previous: previous.map(|r| r.id.clone()),
+            roll: None,
         };
         let bytes = receipt_bytes(&payload)?;
         let receipt = RatingReceipt {
@@ -734,6 +814,49 @@ impl Store {
             payload,
             public_key: STANDARD.encode(key.public().encode_protobuf()),
             signature: STANDARD.encode(key.sign(&bytes).context("Could not sign rating")?),
+        };
+        self.apply_receipt(receipt.clone())?;
+        Ok(receipt)
+    }
+
+    pub fn roll(&mut self, key: &Keypair, wager_micropoints: u64) -> Result<RatingReceipt> {
+        self.record_roll(
+            key,
+            RollPayload {
+                wager_micropoints,
+                ticket: rand::rng().random_range(0..ROLL_TICKETS),
+            },
+        )
+    }
+
+    fn record_roll(&mut self, key: &Keypair, roll: RollPayload) -> Result<RatingReceipt> {
+        let sender = key.public().to_peer_id().to_string();
+        ensure!(
+            sender == self.data.profile_id,
+            "Signing key is not this profile's identity"
+        );
+        let previous = self
+            .data
+            .receipts
+            .iter()
+            .rev()
+            .find(|r| r.payload.sender == sender);
+        let payload = RatingPayload {
+            sender,
+            clip_id: ROLL_CLIP_ID.to_owned(),
+            score: 0,
+            seeders: Vec::new(),
+            total_users: 3,
+            sequence: previous.map_or(1, |r| r.payload.sequence.saturating_add(1)),
+            previous: previous.map(|r| r.id.clone()),
+            roll: Some(roll),
+        };
+        let bytes = receipt_bytes(&payload)?;
+        let receipt = RatingReceipt {
+            id: hex::encode(Sha256::digest(&bytes)),
+            payload,
+            public_key: STANDARD.encode(key.public().encode_protobuf()),
+            signature: STANDARD.encode(key.sign(&bytes).context("Could not sign roll")?),
         };
         self.apply_receipt(receipt.clone())?;
         Ok(receipt)
@@ -779,6 +902,202 @@ mod tests {
             width: 100,
             height: 100,
         }
+    }
+
+    fn resign(receipt: &mut RatingReceipt, key: &Keypair) {
+        let bytes = receipt_bytes(&receipt.payload).unwrap();
+        receipt.id = hex::encode(Sha256::digest(&bytes));
+        receipt.signature = STANDARD.encode(key.sign(&bytes).unwrap());
+    }
+
+    #[test]
+    fn roll_tickets_have_the_exact_requested_distribution() {
+        let mut counts = [0; 10];
+        for ticket in 0..ROLL_TICKETS {
+            counts[usize::from(roll_multiplier(ticket).unwrap())] += 1;
+        }
+        assert_eq!(counts, [512, 256, 128, 64, 32, 16, 8, 4, 2, 1]);
+        assert_eq!(roll_multiplier(0).unwrap(), 0);
+        assert_eq!(roll_multiplier(1022).unwrap(), 9);
+        assert!(roll_multiplier(1023).is_err());
+        assert!(roll_multiplier(u16::MAX).is_err());
+    }
+
+    #[test]
+    fn every_roll_pays_wager_times_multiplier_without_marking_watched() {
+        let mut ticket = 0;
+        for multiplier in 0..=9 {
+            let (mut store, key, peers) = fixture();
+            let wager = 1_234_567;
+            let receipt = store
+                .record_roll(
+                    &key,
+                    RollPayload {
+                        wager_micropoints: wager,
+                        ticket,
+                    },
+                )
+                .unwrap();
+            receipt.verify().unwrap();
+            assert_eq!(
+                store.balance_micropoints(&store.data.profile_id),
+                INITIAL_MICROPOINTS - wager + wager * multiplier
+            );
+            assert_eq!(store.balance_micropoints(&peers[0]), INITIAL_MICROPOINTS);
+            assert!(store.data.watched.is_empty());
+            assert!(store.clip_stats().is_empty());
+            let reopened = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+            assert_eq!(
+                reopened.balance_micropoints(&reopened.data.profile_id),
+                store.balance_micropoints(&store.data.profile_id)
+            );
+            assert_eq!(reopened.data.receipts, store.data.receipts);
+            assert!(!store.apply_receipt(receipt).unwrap());
+            ticket += 512 >> multiplier;
+            let _ = fs::remove_dir_all(store.path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn rolls_and_ratings_share_one_replayable_history() {
+        let (mut sender, key, peers) = fixture();
+        let (mut receiver, _, _) = fixture();
+        for store in [&mut sender, &mut receiver] {
+            store.add_clip(clip(1)).unwrap();
+            store.add_clip(clip(2)).unwrap();
+        }
+        let first = sender
+            .rate(&key, &clip(1).id, 5, vec![peers[0].clone()], 3)
+            .unwrap();
+        // A legacy rating keeps exactly the old JSON fields and signature bytes.
+        let encoded = serde_json::to_value(&first).unwrap();
+        assert!(encoded["payload"].get("roll").is_none());
+        let decoded: RatingReceipt = serde_json::from_value(encoded).unwrap();
+        decoded.verify().unwrap();
+        assert_eq!(decoded, first);
+        let roll = sender
+            .record_roll(
+                &key,
+                RollPayload {
+                    wager_micropoints: 10 * MICROS_PER_POINT,
+                    ticket: 1022,
+                },
+            )
+            .unwrap();
+        let second_roll = sender
+            .record_roll(
+                &key,
+                RollPayload {
+                    wager_micropoints: MICROS_PER_POINT,
+                    ticket: 0,
+                },
+            )
+            .unwrap();
+        let last = sender
+            .rate(&key, &clip(2).id, 7, vec![peers[0].clone()], 3)
+            .unwrap();
+        assert_eq!(last.payload.sequence, 4);
+        assert_eq!(last.payload.previous.as_ref(), Some(&second_roll.id));
+        assert!(receiver.apply_receipt(roll.clone()).is_err());
+        assert!(receiver.apply_receipt(last.clone()).is_err());
+        for receipt in [first, roll, second_roll, last] {
+            receiver.apply_receipt(receipt).unwrap();
+        }
+        assert_eq!(sender.balance(&sender.data.profile_id), 167.0);
+        assert_eq!(receiver.balance(&sender.data.profile_id), 167.0);
+        assert_eq!(receiver.balance(&peers[0]), 112.0);
+        assert_eq!(sender.data.watched.len(), 2);
+        assert!(receiver.data.watched.is_empty());
+        assert_eq!(sender.clip_stats().len(), 2);
+        for store in [sender, receiver] {
+            let reopened = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+            assert_eq!(reopened.data.receipts, store.data.receipts);
+            let _ = fs::remove_dir_all(store.path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn invalid_rolls_never_change_the_ledger() {
+        let (mut store, key, _) = fixture();
+        for roll in [
+            RollPayload {
+                wager_micropoints: 0,
+                ticket: 0,
+            },
+            RollPayload {
+                wager_micropoints: INITIAL_MICROPOINTS + 1,
+                ticket: 0,
+            },
+            RollPayload {
+                wager_micropoints: MAX_ROLL_WAGER_MICROPOINTS + 1,
+                ticket: 1022,
+            },
+            RollPayload {
+                wager_micropoints: 1,
+                ticket: ROLL_TICKETS,
+            },
+        ] {
+            assert!(store.record_roll(&key, roll).is_err());
+        }
+        assert!(
+            store
+                .roll(&Keypair::generate_ed25519(), MICROS_PER_POINT)
+                .is_err()
+        );
+        assert_eq!(store.balance(&store.data.profile_id), 100.0);
+        assert!(store.data.receipts.is_empty());
+        assert!(store.data.watched.is_empty());
+        let receipt = store.roll(&key, MICROS_PER_POINT).unwrap();
+        let mut changed = receipt.clone();
+        let ticket = &mut changed.payload.roll.as_mut().unwrap().ticket;
+        *ticket = (*ticket + 1) % ROLL_TICKETS;
+        assert!(changed.verify().is_err());
+        let mut changed = receipt.clone();
+        changed.payload.clip_id = clip(1).id;
+        resign(&mut changed, &key);
+        assert!(changed.verify().is_err());
+        let mut changed = receipt.clone();
+        changed.payload.total_users = 4;
+        resign(&mut changed, &key);
+        assert!(changed.verify().is_err());
+        let mut changed = receipt;
+        changed.payload.roll.as_mut().unwrap().wager_micropoints = 0;
+        resign(&mut changed, &key);
+        assert!(changed.verify().is_err());
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
+    }
+
+    #[test]
+    fn rolls_reject_balance_overflow_and_roll_back_failed_persistence() {
+        let (mut store, key, _) = fixture();
+        loop {
+            let balance = store.balance_micropoints(&store.data.profile_id);
+            let wager = balance.min(MAX_ROLL_WAGER_MICROPOINTS);
+            let outcome = store.record_roll(
+                &key,
+                RollPayload {
+                    wager_micropoints: wager,
+                    ticket: 1022,
+                },
+            );
+            if balance.checked_add(wager * 8).is_none() {
+                assert!(outcome.is_err());
+                assert_eq!(store.balance_micropoints(&store.data.profile_id), balance);
+                break;
+            }
+            outcome.unwrap();
+        }
+        let before = store.data.receipts.clone();
+        let balance = store.balance_micropoints(&store.data.profile_id);
+        let directory = store.path.parent().unwrap().to_path_buf();
+        let blocker = directory.join("regular-file");
+        fs::write(&blocker, b"not a directory").unwrap();
+        store.path = blocker.join("state.json");
+        assert!(store.roll(&key, 1).is_err());
+        assert_eq!(store.balance_micropoints(&store.data.profile_id), balance);
+        assert_eq!(store.data.receipts, before);
+        assert!(store.data.watched.is_empty());
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -30,10 +30,10 @@ See [Linux run and build instructions](docs/LINUX.md) for runtime packages, port
 
 - **Seed / upload:** select or drop MP4 or WebM videos. Files pass validation before they enter your library. New clips become torrents and begin seeding automatically. Uploading the exact same bytes joins the same deterministic torrent, even if the original filename differs. You can keep up to 100 permanent clips. Removing a clip stops its permanent seeding. Each clip shows your points earned, its average rating out of 9, and its rating count. Sort by recency (newest additions first), points (most earned first), or rating (highest average first, unrated last).
 - **Rate:** videos loop until you press a number from 0–9 or use a rating button. The number is the points you spend. Zero records the clip as watched without paying anyone. Positive ratings temporarily seed the watched clip for the rest of the rating session; leaving Rate ends those temporary seeds. You cannot rate your own permanently seeded clips or rate the same content twice.
-- **Roll:** coming soon. No gambling or point deduction is implemented.
+- **Roll:** wager points for a random integer multiplier from 0 through 9. A 0 loses the wager and plays no clip. Positive results pay `wager × multiplier` in total and play one random clip from that rating tier, without looping. Previously watched clips and clips in your own library are eligible.
 - **Settings:** edit your peer display name, playback mute/volume, automatic prefetch, and saved bootstrap peer addresses. Network details show the local peer identity and connection addresses.
 
-Prefetch starts with the app. Downloads run one at a time, in a shuffled order, and completed files are validated before they become playable. The app targets ten unwatched ready clips and fills vacancies as you rate. It can only fill that buffer when the connected network has enough eligible clips and reachable seeders. Pending queue downloads do not announce themselves as seeders before completion.
+Rate prefetch starts with the app. Its downloads run one at a time, in a shuffled order, and completed files are validated before they become playable. The app targets ten unwatched ready clips and fills vacancies as you rate. It can only fill that buffer when the connected network has enough eligible clips and reachable seeders. Pending queue downloads do not announce themselves as seeders before completion. Roll prepares its result through a separate download session and cache, with the same validation, so Rate cleanup cannot remove a playing roll clip.
 
 ## File restrictions
 
@@ -55,6 +55,10 @@ The validator has a timeout, bounded output and allocation settings, a demuxer a
 
 Every identity starts with **100 points**. A rating costs the rater its score, from 0 through 9.
 
+Roll accepts positive wagers up to your balance, in millionths of a point. The wager is deducted once and the total payout is `wager × k`: rolling 1 returns the wager, while rolling 9 returns nine times the wager. Each multiplier has probability `P(k) = 2^(-k) × (512 / 1023)` for `k = 0…9`. The exact outcome weights are 512, 256, 128, 64, 32, 16, 8, 4, 2, and 1 out of 1023.
+
+For a positive roll, the clip tier is its average positive rating rounded to the nearest integer. Unrated clips are excluded. Selection includes previously watched clips and your own clips; playing a roll does not submit a rating or change watched history. If no clip in that tier is available, the result and payout still stand and the interface explains why no clip can play. Rolls share the signed receipt history with ratings, so point changes persist across restarts and can be validated by peers.
+
 Library ratings are the arithmetic mean of the positive 1–9 scores in this peer's validated receipts, regardless of who earned the payout. A 0 remains a free skip and is excluded from the average and rating count; clips with no positive ratings show “Unrated.” Per-clip points count only rewards earned by your identity for that content. Both values include existing receipts and survive restarts. Ratings reflect the receipts this peer has received, so disconnected peers can temporarily show different values.
 
 Recency uses the date a clip was added to your permanent library, preserved across restarts, duplicate uploads, and profile moves. Older profiles without addition dates remain compatible; those clips sort behind dated additions, with a stable content-ID order for ties. Points and rating ties use recency, then content ID.
@@ -73,7 +77,7 @@ Each receipt is signed by its rater and includes its score, recipient snapshot, 
 
 Discovery uses libp2p mDNS on a local network and direct TCP bootstrap addresses for other networks. BitTorrent transfers use `librqbit`; catalog metadata and signed rating receipts use the authenticated libp2p mesh. Peers behind restrictive NAT may need reachable bootstrap peers and port forwarding. There is no hosted relay or promised automatic NAT traversal.
 
-There is no global census or consensus algorithm. Seeder presence and the population `N` are observations, and peers can disagree while disconnected. Signed receipts identify their author but do not prove actual seeding or honest population reports. New identities each receive their own initial grant, so Sybil identities, collusion, partitioned double-spends, and dishonest reward snapshots remain open problems. Do not treat points as having monetary value. Wider deployment needs an explicit identity and consensus policy.
+There is no global census or consensus algorithm. Seeder presence and the population `N` are observations, and peers can disagree while disconnected. Signed receipts identify their author but do not prove actual seeding or honest population reports. Roll draws are generated locally and recorded in signed receipts; peers can verify the recorded multiplier and payout, but cannot prove the draw was random or prevent a modified client from choosing outcomes. New identities each receive their own initial grant, so Sybil identities, collusion, partitioned double-spends, and dishonest reward snapshots remain open problems. Do not treat points as having monetary value. Wider deployment needs an explicit identity and consensus policy.
 
 Duplicate detection is exact-byte detection. Re-encoding, editing, or changing embedded metadata creates different content and a new torrent. Perceptual duplicate detection is not implemented.
 
@@ -128,7 +132,7 @@ Run the checks with:
 ./scripts/check.sh
 ```
 
-This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating math, signatures and persistence, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
+This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating and roll math, signatures and persistence, roll playback behavior, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
 
 ## Source layout
 
