@@ -1,6 +1,5 @@
 {
   "checkpoint": "latest_pre_cryptocurrency_v0.1.0",
-  "baseline_reference": "earlier-checkpoint/evidence.json",
   "restored_revisions": [
     "clip ratings and library sorting",
     "signed points Roll",

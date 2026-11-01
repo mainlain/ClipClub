@@ -1,1 +1,0 @@
-PASS: packaged v0.1.0 points app, 100-point start, embedded validator, no crypto actions, saved identity/settings and restart; temporary profiles removed.

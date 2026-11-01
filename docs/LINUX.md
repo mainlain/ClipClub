@@ -1,6 +1,6 @@
 # Recovered points fork on Linux
 
-This is the v0.1.0 points recovery. Its normal profile is `$XDG_DATA_HOME/clipcrop-points` (default `~/.local/share/clipcrop-points`). The system package and launcher are `clipcrop-points`; the portable executable filename remains `clipcrop`. The historical baseline is preserved in Git. Linux fork binaries have not been rebuilt in this recovery; the instructions below describe how to build/package them. See [RECOVERY.md](../RECOVERY.md).
+This is the v0.1.0 points recovery. Its normal profile is `$XDG_DATA_HOME/clipcrop-points` (default `~/.local/share/clipcrop-points`). The system package and launcher are `clipcrop-points`; the portable executable filename remains `clipcrop`. Linux fork binaries have not been rebuilt in this recovery; the instructions below describe how to build/package them. See [RECOVERY.md](../RECOVERY.md).
 
 # Linux
 

@@ -1,7 +1,0 @@
---- a/README.md
-+++ b/README.md
-@@ -33,3 +33,3 @@
- 
--Prefetch starts with the app. Downloads run one at a time, in a shuffled order, and completed files are validated before they become playable. The app targets ten unwatched ready clips and fills vacancies as you rate. It can only fill that buffer when the connected network has enough eligible clips and reachable seeders. Pending queue downloads do not announce themselves as seeders before completion.
-+Rate prefetch starts with the app. Its downloads run one at a time, in a shuffled order, and completed files are validated before they become playable. The app targets ten unwatched ready clips and fills vacancies as you rate. It can only fill that buffer when the connected network has enough eligible clips and reachable seeders. Pending queue downloads do not announce themselves as seeders before completion. Roll prepares its result through a separate download session and cache, with the same validation, so Rate cleanup cannot remove a playing roll clip.
- 
