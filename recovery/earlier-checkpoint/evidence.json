@@ -1,0 +1,20 @@
+{
+  "reference_release": "clipcrop-0.1.0-linux-x86_64.tar.gz",
+  "reference_executable_sha256": "f0c25337d71906e5344b4b31e24b8e841c8cf52ff2895068072b39c0b2eb6309",
+  "third_party_package_name_version_pairs": 633,
+  "third_party_inventory_match": true,
+  "original_ui_assets": {
+    "ui/index.html": {
+      "sha256": "9a11549c63704963a6fcace0949677d77802d84a4a3d097c8e2bffb843204df5",
+      "byte_exact_in_reference_binary": true
+    },
+    "ui/app.js": {
+      "sha256": "3c49a71fe83d1c4a0dec3ccb5547ff49cf8674cfbfd0f9f781f40a58b3e04f81",
+      "byte_exact_in_reference_binary": true
+    },
+    "ui/style.css": {
+      "sha256": "02cd001f11f59cd7eeb104e7c47d1bda68ca5f80275a6ee7d491bca24b74a412",
+      "byte_exact_in_reference_binary": true
+    }
+  }
+}

@@ -26,6 +26,7 @@ environment.pop('CLIPCROP_FFPROBE', None)
 with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
     profile = Path(folder) / 'profile'
     saved_identity = None
+    saved_balance = 100
     for attempt in range(2):
         http_port = port()
         log = open(Path(folder) / f'launch-{attempt}.log', 'w+')
@@ -60,8 +61,10 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
                     return json.loads(response.read())
 
             state = request('state')
-            assert state['balance'] == 100
+            assert state['balance'] == saved_balance
             assert 'wallet' not in state and 'pool' not in state
+            assert 'data-page="home"' in html
+            assert 'id="library-sort"' in html and 'id="roll-wager"' in html
             assert Path(state['data_folder']).resolve() == profile.resolve()
             assert json.loads((profile / 'state.json').read_text())['version'] == 1
             assert (profile / 'bin' / 'ffprobe').is_file(), 'Embedded validator was not installed'
@@ -70,16 +73,30 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
                 settings = state['settings']
                 settings['display_name'] = 'Recovered Points Check'
                 request('settings', settings)
+                rolled = request('roll', {'wager': 1})
+                multiplier = rolled['multiplier']
+                assert isinstance(multiplier, int) and 0 <= multiplier <= 9
+                assert rolled['wager'] == 1 and rolled['payout'] == multiplier
+                saved_balance = 99 + multiplier
+                assert rolled['balance'] == saved_balance
+                receipt = json.loads((profile / 'state.json').read_text())['receipts'][-1]
+                assert receipt['id'] == rolled['id']
+                assert receipt['payload']['roll']['wager_micropoints'] == 1000000
             else:
                 assert state['profile_id'] == saved_identity
                 assert state['settings']['display_name'] == 'Recovered Points Check'
-            for route, data in [('wallet/mine', {}), ('roll', {'wager': '1'})]:
+            for route, data in [('wallet/mine', {})]:
                 try:
                     request(route, data)
                     raise AssertionError('Cryptocurrency endpoint survived: ' + route)
                 except urllib.error.HTTPError as error:
                     assert error.code in (404, 405)
-            assert request('state')['balance'] == 100
+            try:
+                request('roll', {'wager': 1, 'multiplier': 9})
+                raise AssertionError('Client-selected multiplier was accepted')
+            except urllib.error.HTTPError as error:
+                assert error.code in (400, 422)
+            assert request('state')['balance'] == saved_balance
         finally:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
@@ -89,4 +106,4 @@ with tempfile.TemporaryDirectory(prefix='clipcrop-points-package-') as folder:
                     process.kill()
                     process.wait()
             log.close()
-print('PASS: packaged v0.1.0 points app, 100-point start, embedded validator, no crypto actions, saved identity/settings and restart; temporary profiles removed.')
+print('PASS: latest packaged v0.1.0, compact menu, library sorting, signed Roll payout, 100-point start, embedded validator, no cryptocurrency actions, identity/settings/balance persistence; temporary profiles removed.')

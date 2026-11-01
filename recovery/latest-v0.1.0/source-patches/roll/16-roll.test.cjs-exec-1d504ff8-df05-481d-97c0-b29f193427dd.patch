@@ -1,0 +1,24 @@
+--- a/scripts/roll.test.cjs
++++ b/scripts/roll.test.cjs
+@@ -161 +161,21 @@
+ });
++
++test('prepared clip received by polling survives the initial roll response arriving later',async()=>{
++  const app=interfaceFixture(),player=app.elements.get('roll-player');let resolveRoll;
++  const prepared=result(),initial={...prepared,clip:null,message:'Preparing a clip…'};
++  app.context.fetch=async url=>{
++    if(url==='/api/roll')return new Promise(resolve=>{resolveRoll=()=>resolve({ok:true,json:async()=>initial});});
++    return {ok:true,json:async()=>({...app.context.fixture,roll:prepared,balance:prepared.balance})};
++  };
++  const pending=app.run('roll()');
++  await app.run('refresh()');
++  assert.equal(player.playCount,1);
++  assert.equal(player.paused,false);
++  const pauses=player.pauseCount,loads=player.loadCount;
++  resolveRoll();await pending;
++  assert.equal(app.run('state.roll.clip.id'),prepared.clip.id);
++  assert.equal(player.paused,false,'the initial response must not interrupt the prepared clip');
++  assert.equal(player.pauseCount,pauses);
++  assert.equal(player.loadCount,loads);
++  assert.equal(player.playCount,1);
++});

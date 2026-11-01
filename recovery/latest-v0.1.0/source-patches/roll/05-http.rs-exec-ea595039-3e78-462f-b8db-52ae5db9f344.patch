@@ -1,0 +1,17 @@
+--- a/src/http.rs
++++ b/src/http.rs
+@@ -60,2 +60,3 @@
+         .route("/api/rate", post(rate))
++        .route("/api/roll", post(roll))
+         .route("/api/session", post(session))
+@@ -161,2 +162,10 @@
+ #[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Roll {
++    wager: f64,
++}
++async fn roll(State(state): State<HttpState>, Json(input): Json<Roll>) -> ApiResult {
++    Ok(Json(state.app.roll(input.wager).await?))
++}
++#[derive(Deserialize)]
+ struct Session {

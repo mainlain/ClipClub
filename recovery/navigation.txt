@@ -1,0 +1,1 @@
+Passed: home startup makes no session request; rapid navigation leaves Home visible with Rate stopped and playback paused.

@@ -1,0 +1,20 @@
+--- a/scripts/roll.test.cjs
++++ b/scripts/roll.test.cjs
+@@ -145 +145,17 @@
+ });
++
++test('a state poll started before the wager cannot replace its result or balance',async()=>{
++  const app=interfaceFixture();let resolveOld;
++  const outcome=result();let stateCalls=0;
++  app.context.fetch=async url=>{
++    if(url==='/api/roll')return {ok:true,json:async()=>outcome};
++    if(++stateCalls===1)return new Promise(resolve=>{resolveOld=()=>resolve({ok:true,json:async()=>({...app.context.fixture,roll:null,balance:100})});});
++    return {ok:true,json:async()=>({...app.context.fixture,roll:outcome,balance:outcome.balance})};
++  };
++  const oldPoll=app.run('refresh()');
++  await app.run('roll()');
++  resolveOld();await oldPoll;
++  assert.equal(app.run('state.roll.id'),outcome.id);
++  assert.equal(app.run('state.balance'),outcome.balance);
++  assert.equal(app.elements.get('roll-player').playCount,1);
++});

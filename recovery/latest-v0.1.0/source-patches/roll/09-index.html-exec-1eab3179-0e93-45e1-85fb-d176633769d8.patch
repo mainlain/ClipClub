@@ -1,0 +1,20 @@
+--- a/ui/index.html
++++ b/ui/index.html
+@@ -8,3 +8,3 @@
+ <button data-page="rate" class="active" aria-label="Rate"><span class="nav-icon" aria-hidden="true">▷</span>Rate<span class="nav-count" id="ready-count">0</span></button>
+-<button data-page="roll" aria-label="Roll"><span class="nav-icon" aria-hidden="true">⚄</span>Roll<span class="soon-dot"></span></button>
++<button data-page="roll" aria-label="Roll"><span class="nav-icon" aria-hidden="true">⚄</span>Roll</button>
+ <button data-page="settings" aria-label="Settings"><span class="nav-icon" aria-hidden="true">☷</span>Settings</button>
+@@ -28,3 +28,11 @@
+ </section>
+-<section id="page-roll" class="page" hidden><div class="page-heading"><h1>Roll</h1></div><div class="coming-soon"><div class="dice-art" aria-hidden="true"><span>•</span><span>•</span><span>•</span></div><h2>Coming soon</h2><button class="button primary" data-goto="rate">Back to Rate →</button></div></section>
++<section id="page-roll" class="page" hidden>
++<div class="page-heading"><h1>Roll</h1><span class="tag">0–9 × YOUR WAGER</span></div>
++<div class="watch-layout roll-layout"><div>
++<div class="player" id="roll-player-shell"><video id="roll-player" playsinline controls preload="auto" aria-label="Roll clip"></video><div class="player-empty" id="roll-player-empty"><div class="orbit" aria-hidden="true"><span></span><i>⚄</i></div><h2 id="roll-waiting-title">Take a chance</h2><p id="roll-waiting-message">Wager points to roll a multiplier and discover a clip.</p></div></div>
++<div class="roll-clip-info" id="roll-clip-details" hidden><h3 id="roll-clip-title"></h3><p id="roll-clip-meta"></p></div>
++<div class="roll-result" id="roll-result" role="status" aria-live="polite" hidden><strong id="roll-multiplier"></strong><div><span id="roll-result-title"></span><p id="roll-result-detail"></p></div></div>
++<form id="roll-form" class="roll-form"><label class="field-label" for="roll-wager">Wager points</label><div class="roll-wager-row"><input id="roll-wager" type="number" inputmode="decimal" min="0.000001" step="0.000001" value="1" required aria-describedby="roll-wager-help roll-error"><button class="button primary" id="roll-button" type="submit">Roll →</button></div><p class="field-help" id="roll-wager-help">Your wager is deducted, then wager × multiplier is returned. A 0 loses the wager; a 1 returns it.</p><p id="roll-error" role="alert" hidden></p></form>
++</div><aside class="watch-aside roll-aside"><div class="queue-card"><div class="section-line"><strong>Multiplier odds</strong><span>PER ROLL</span></div><div id="roll-odds" class="roll-odds" aria-label="Multiplier probabilities"></div></div><details class="rating-help"><summary>How Roll works</summary><p>Each multiplier plays a random clip with that rounded average rating. A 0 plays no clip.</p><p>Clips play once. Previously watched clips can appear again.</p><p>The multiplier determines your payout even when no clip with that rating is available.</p></details></aside></div>
++</section>
+ <section id="page-settings" class="page" hidden><div class="page-heading"><h1>Settings</h1></div>

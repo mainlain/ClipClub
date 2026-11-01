@@ -1,37 +1,46 @@
-   Compiling clipcrop v0.1.0 (/private/var/folders/jh/fm22qsms7tbcmrb4z4mgct1w0000gn/T/clipcrop-v010-recovery-iqyw_pkp/recovered)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+   Compiling clipcrop v0.1.0 (/private/var/folders/jh/fm22qsms7tbcmrb4z4mgct1w0000gn/T/clipcrop-latest-v01-jbjyo1ac/work)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.82s
      Running unittests src/main.rs (target/debug/deps/clipcrop-4b76b5d336728b10)
 
-running 29 tests
+running 38 tests
+test app::tests::roll_rating_uses_nearest_integer_tiers ... ok
+test app::tests::roll_wagers_use_exact_point_precision_and_reject_invalid_amounts ... ok
 test core::tests::payout_formula_has_lone_seeder_exception_and_individual_rewards ... ok
+test core::tests::corrupt_state_never_silently_resets_a_profile ... ok
+test core::tests::roll_tickets_have_the_exact_requested_distribution ... ok
+test core::tests::invalid_rolls_never_change_the_ledger ... ok
+test core::tests::persistence_failure_does_not_spend_or_mark_watched ... ok
+test core::tests::catalog_cap_applies_to_new_entries_but_allows_verified_repairs ... ok
+test core::tests::signed_spend_credit_replay_and_restart ... ok
+test core::tests::tampering_and_self_rating_are_rejected ... ok
 test http::tests::bounded_video_ranges ... ok
 test media::tests::header_and_size_fail_closed ... ok
+test core::tests::library_recency_survives_repairs_restart_and_legacy_state ... ok
 test media::tests::limits_check_headers_and_decoded_frames ... ok
 test media::tests::rejects_hidden_streams_and_unknown_duration ... ok
 test peer::tests::peer_addresses_require_real_tcp_port ... ok
-test peer::tests::portable_identity_is_reused_and_corruption_is_not_reset ... ok
 test peer::tests::presence_is_bounded_and_cannot_duplicate_seeder_identity ... ok
-test core::tests::corrupt_state_never_silently_resets_a_profile ... ok
+test core::tests::imported_receipts_require_an_unbroken_sender_chain ... ok
 test tests::explicit_profile_does_not_resolve_the_default_folder ... ok
-test peer::tests::two_real_peers_exchange_authenticated_presence ... ok
 test tests::help_does_not_resolve_a_profile_folder ... ok
-test core::tests::persistence_failure_does_not_spend_or_mark_watched ... ok
+test peer::tests::two_real_peers_exchange_authenticated_presence ... ok
 test tests::linux_missing_or_invalid_home_does_not_fall_back_to_a_portable_profile ... ok
+test peer::tests::portable_identity_is_reused_and_corruption_is_not_reset ... ok
 test tests::linux_profile_defaults_to_user_data_for_unset_empty_or_relative_xdg_paths ... ok
 test tests::linux_profile_uses_absolute_xdg_data_home_without_requiring_home ... ok
 test tests::macos_missing_or_invalid_home_does_not_fall_back_to_a_portable_profile ... ok
-test core::tests::tampering_and_self_rating_are_rejected ... ok
 test tests::macos_default_profile_is_in_application_support ... ok
-test core::tests::signed_spend_credit_replay_and_restart ... ok
 test torrent::tests::rejects_hostile_metainfo_and_claimed_sizes ... ok
-test torrent::tests::rejects_noncanonical_and_inconsistent_pieces ... ok
 test torrent::tests::identical_bytes_have_one_swarm ... ok
 test core::tests::verified_upload_repairs_first_seen_metadata_poisoning_atomically ... ok
-test core::tests::catalog_cap_applies_to_new_entries_but_allows_verified_repairs ... ok
-test core::tests::imported_receipts_require_an_unbroken_sender_chain ... ok
+test torrent::tests::rejects_noncanonical_and_inconsistent_pieces ... ok
+test core::tests::rolls_reject_balance_overflow_and_roll_back_failed_persistence ... ok
+test core::tests::rolls_and_ratings_share_one_replayable_history ... ok
 test core::tests::overspending_is_rejected_without_marking_watched ... ok
+test core::tests::clip_stats_separate_rating_quality_from_earned_points_and_survive_restart ... ok
+test core::tests::every_roll_pays_wager_times_multiplier_without_marking_watched ... ok
 test core::tests::limits_and_conflicting_content_are_rejected ... ok
 test torrent::tests::two_engines_transfer_exact_file ... ok
 
-test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.26s
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.78s
 

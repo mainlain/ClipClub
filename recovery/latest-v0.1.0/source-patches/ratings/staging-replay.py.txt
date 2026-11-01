@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Replay exact historical library rating/sorting diffs into an explicit target."""
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+HERE=Path(__file__).resolve().parent
+ALLOWED={'src/app.rs','src/core.rs','ui/app.js','ui/index.html','ui/style.css','README.md','scripts/check.sh','scripts/integration.py','scripts/library.test.cjs'}
+
+def hunks(diff):
+    chunks=[];old=[];new=[];start=None
+    def append():
+        if start is not None:chunks.append((start,''.join(old),''.join(new)))
+    for line in diff.splitlines(keepends=True):
+        if line.startswith('@@'):
+            append();old=[];new=[]
+            match=re.match(r'@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@',line)
+            if not match:raise RuntimeError(f'Invalid historical hunk: {line}')
+            start=int(match.group(1))
+        elif line.startswith(' '):old.append(line[1:]);new.append(line[1:])
+        elif line.startswith('-'):old.append(line[1:])
+        elif line.startswith('+'):new.append(line[1:])
+        elif line.startswith('\\ No newline'):pass
+        else:raise RuntimeError(f'Unknown hunk line: {line!r}')
+    append()
+    return chunks
+
+def apply(target):
+    changes=json.loads((HERE/'changes.json').read_text())
+    paths={c['path'] for c in changes}
+    assert paths <= ALLOWED
+    result={p:(target/p).read_text() if (target/p).exists() else None for p in paths}
+    adaptation=[]
+    for c in changes:
+        path=c['path'];source=result[path]
+        if c['kind']=='add':
+            if source is not None:raise RuntimeError(f'Historical add exists already: {path}')
+            result[path]=c['diff'];continue
+        if source is None:raise RuntimeError(f'Missing historical input: {path}')
+        offset=0
+        for n,(line,old,new) in enumerate(hunks(c['diff'])):
+            starts=[m.start() for m in re.finditer(re.escape(old),source)]
+            if not starts:
+                # Intentional previous fork isolation already removed this import.
+                if c['id']=='exec-62dc249b-dc22-432b-be99-cd14faa3598c' and path=='src/core.rs' and n==0 and 'use std::time::{SystemTime, UNIX_EPOCH};' in old and new in source:
+                    adaptation.append({'change':c['id'],'path':path,'hunk':n,'reason':'Already-removed test import; fork uses unique tempfile fixture'})
+                    continue
+                raise RuntimeError(f'Historical context mismatch: {c["id"]}:{path}:hunk{n}\n{old[:500]}')
+            # Small closing-brace hunk context can repeat; original line is tie-breaker.
+            at=min(starts,key=lambda pos:abs(source[:pos].count('\n')-(line-1+offset)))
+            source=source[:at]+new+source[at+len(old):]
+            offset+=new.count('\n')-old.count('\n')
+        result[path]=source
+    # Verify every patch before writing any target source.
+    for path,source in result.items():
+        destination=target/path
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        destination.write_text(source)
+    return adaptation,sorted(paths)
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('target',type=Path)
+    parser.add_argument('--rustfmt',type=Path)
+    opts=parser.parse_args()
+    target=opts.target.resolve(strict=True)
+    if target==Path('/Users/sean/Downloads/clipcrop').resolve():
+        raise SystemExit('Refusing to mutate current cryptocurrency project')
+    adaptation,paths=apply(target)
+    if opts.rustfmt:
+        subprocess.run([str(opts.rustfmt),'--edition','2024',str(target/'src/core.rs'),str(target/'src/app.rs')],check=True)
+    print(json.dumps({'target':str(target),'adaptations':adaptation,'paths':paths},indent=2))

@@ -1,6 +1,6 @@
 # ClipCrop Points
 
-Recovered v0.1.0 points fork. See [RECOVERY.md](RECOVERY.md) for source provenance, verification and the preserved Git baseline. This fork uses separate profile and application identities so it can coexist with the cryptocurrency project.
+Recovered latest pre-cryptocurrency v0.1.0 points fork. See [RECOVERY.md](RECOVERY.md) for source provenance, verification and the preserved Git baseline. This fork uses separate profile and application identities so it can coexist with the cryptocurrency project.
 
 A minimalist Rust desktop app for sharing short videos through BitTorrent and spending points to rate them. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 

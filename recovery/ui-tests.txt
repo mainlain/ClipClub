@@ -1,0 +1,21 @@
+✔ library sorts independently by recency, points and average rating (9.277792ms)
+✔ rating ties and unknown legacy dates have stable content-ID ordering (1.367708ms)
+✔ refresh keeps the selected sort and updates scores without confusing unrated clips (1.181291ms)
+✔ empty library renders and titles stay escaped (0.524625ms)
+✔ Roll video has no loop and polling never replays an ended or paused result (8.809709ms)
+✔ zero clears the previous clip and a downloaded clip starts once when it arrives (0.9495ms)
+✔ leaving Roll pauses playback and returning does not replay it (1.240125ms)
+✔ invalid wagers and insufficient balances never submit a request (0.812541ms)
+✔ submit sends wager once, disables controls in flight, and displays the saved payout (1.442625ms)
+✔ API failure preserves the balance and shows its reason (0.439459ms)
+✔ result arriving after navigation stays paused (1.305958ms)
+✔ a state poll started before the wager cannot replace its result or balance (0.728625ms)
+✔ prepared clip received by polling survives the initial roll response arriving later (0.759208ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 80.458958

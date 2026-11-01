@@ -1,0 +1,82 @@
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -2,3 +2,4 @@
+     core::{
+-        Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, MICROS_PER_POINT, RatingReceipt, Settings, Store,
++        Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, MAX_ROLL_WAGER_MICROPOINTS, MICROS_PER_POINT,
++        RatingReceipt, Settings, Store, roll_multiplier,
+     },
+@@ -13,2 +14,3 @@
+ use rand::seq::IteratorRandom;
++use serde::Serialize;
+ use serde_json::{Value, json};
+@@ -31,2 +33,4 @@
+     downloader: TorrentEngine,
++    roll_downloader: TorrentEngine,
++    roll_preparation: Mutex<()>,
+     probe: PathBuf,
+@@ -46,2 +50,19 @@
+ }
++#[derive(Clone, Serialize)]
++struct RollResult {
++    id: String,
++    multiplier: u8,
++    wager: f64,
++    payout: f64,
++    balance: f64,
++    clip: Option<Clip>,
++    message: Option<String>,
++}
++
++struct RollClip {
++    clip: Clip,
++    source: Option<PathBuf>,
++    peers: Vec<SocketAddr>,
++}
++
+ #[derive(Default)]
+@@ -60,4 +81,28 @@
+     replay_requested: bool,
++    roll: Option<RollResult>,
++    roll_cancel: Option<CancellationToken>,
++    roll_file: Option<String>,
+ }
+ 
++fn wager_micropoints(wager: f64) -> Result<u64> {
++    let scaled = wager * MICROS_PER_POINT as f64;
++    ensure!(
++        wager.is_finite() && wager > 0.0 && scaled >= 1.0,
++        "Wager at least 0.000001 points"
++    );
++    ensure!(
++        scaled < MAX_ROLL_WAGER_MICROPOINTS as f64,
++        "Wager is too large"
++    );
++    ensure!(
++        (scaled - scaled.round()).abs() <= 0.000001,
++        "Use at most six decimal places for your wager"
++    );
++    Ok(scaled.round() as u64)
++}
++
++fn roll_rating(average: f64) -> u8 {
++    average.round().clamp(1.0, 9.0) as u8
++}
++
+ pub fn prepared(clip: &Clip) -> Result<PreparedTorrent> {
+@@ -78,4 +123,5 @@
+         tokio::fs::create_dir_all(root.join("incoming")).await?;
++        tokio::fs::create_dir_all(root.join("roll-cache")).await?;
+         // Cache has no identity or wallet state and is deliberately session-local.
+-        for folder in ["cache", "incoming"] {
++        for folder in ["cache", "incoming", "roll-cache"] {
+             let mut files = tokio::fs::read_dir(root.join(folder)).await?;
+@@ -96,2 +142,3 @@
+         let downloader = TorrentEngine::downloader(root.join("cache")).await?;
++        let roll_downloader = TorrentEngine::downloader(root.join("roll-cache")).await?;
+         let (mesh, mut events) = peer::start(
+@@ -109,2 +156,4 @@
+             downloader,
++            roll_downloader,
++            roll_preparation: Mutex::new(()),
+             probe,

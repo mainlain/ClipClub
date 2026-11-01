@@ -1,0 +1,7 @@
+@@ -183,4 +183,4 @@
+         .with_title("Clipcrop")
+-        .with_inner_size(LogicalSize::new(1180.0, 830.0))
+-        .with_min_inner_size(LogicalSize::new(740.0, 620.0))
++        .with_inner_size(LogicalSize::new(480.0, 620.0))
++        .with_min_inner_size(LogicalSize::new(360.0, 480.0))
+         .build(&event_loop)?;

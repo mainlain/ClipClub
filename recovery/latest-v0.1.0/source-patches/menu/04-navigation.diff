@@ -1,0 +1,5 @@
+@@ -195,3 +195,3 @@
+ document.querySelector('.brand').addEventListener('click',event=>{event.preventDefault();navigate('home');});
+-document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.page)));
++document.querySelectorAll('button[data-page]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.page)));
+ document.querySelectorAll('[data-goto]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.goto)));

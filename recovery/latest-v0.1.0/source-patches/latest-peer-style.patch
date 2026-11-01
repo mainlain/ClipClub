@@ -1,0 +1,33 @@
+--- a/src/peer.rs
++++ b/src/peer.rs
+@@ -313,11 +313,11 @@
+ }
+ 
+ fn publish(swarm: &mut Swarm<Behaviour>, topic: &gossipsub::IdentTopic, wire: &WireMessage) {
+-    if let Ok(bytes) = serde_json::to_vec(wire) {
+-        if bytes.len() < MAX_WIRE - 1024 {
+-            // No peers and duplicate messages are normal, especially at startup.
+-            let _ = swarm.behaviour_mut().gossip.publish(topic.clone(), bytes);
+-        }
++    if let Ok(bytes) = serde_json::to_vec(wire)
++        && bytes.len() < MAX_WIRE - 1024
++    {
++        // No peers and duplicate messages are normal, especially at startup.
++        let _ = swarm.behaviour_mut().gossip.publish(topic.clone(), bytes);
+     }
+ }
+ 
+@@ -411,11 +411,10 @@
+                 Some(Command::Advert(clip)) => publish(&mut swarm, &topic, &WireMessage::Advert { clip }),
+                 Some(Command::Receipt(receipt)) => publish(&mut swarm, &topic, &WireMessage::Receipt { receipt }),
+                 Some(Command::Dial(address)) => {
+-                    if let Ok(address) = validate_address(&address) {
+-                        if retry_addresses.len() < 64 && !retry_addresses.contains(&address) {
++                    if let Ok(address) = validate_address(&address)
++                        && retry_addresses.len() < 64 && !retry_addresses.contains(&address) {
+                             retry_addresses.push(address);
+                         }
+-                    }
+                     if let Err(error) = validate_address(&address).and_then(|addr| swarm.dial(addr).map_err(Into::into)) {
+                         let _ = events.try_send(PeerEvent::Error(format!("Peer connection failed: {error}")));
+                     }

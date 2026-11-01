@@ -1,0 +1,11 @@
+--- a/ui/app.js
++++ b/ui/app.js
+@@ -146,3 +146,7 @@
+     // Ignore state polls begun before this wager completed.
+-    refreshVersion++;state.roll=result;state.balance=result.balance;render();
++    refreshVersion++;
++    // A poll can deliver the prepared clip before the original roll response.
++    // Keep that newer playback state for this result instead of clearing it.
++    state.roll=state.roll?.id===result.id&&state.roll.clip?state.roll:result;
++    state.balance=result.balance;render();
+     await refresh();

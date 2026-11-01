@@ -1,0 +1,35 @@
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -750,3 +750,6 @@
+                     result = tokio::time::timeout(Duration::from_secs(90), self.roll_downloader.wait(&handle)) => {
+-                        result.context("Roll clip download timed out")?
++                        match result {
++                            Ok(result) => result,
++                            Err(error) => Err(anyhow::Error::new(error).context("Roll clip download timed out")),
++                        }
+                     }
+@@ -936 +939,24 @@
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn roll_wagers_use_exact_point_precision_and_reject_invalid_amounts() {
++        assert_eq!(wager_micropoints(1.0).unwrap(), 1_000_000);
++        assert_eq!(wager_micropoints(0.000001).unwrap(), 1);
++        assert_eq!(wager_micropoints(1.234567).unwrap(), 1_234_567);
++        assert_eq!(wager_micropoints(0.1 + 0.2).unwrap(), 300_000);
++        for invalid in [0.0, -1.0, 0.0000001, 1.0000001, f64::NAN, f64::INFINITY, f64::MAX] {
++            assert!(wager_micropoints(invalid).is_err(), "Accepted {invalid}");
++        }
++    }
++
++    #[test]
++    fn roll_rating_uses_nearest_integer_tiers() {
++        for (average, tier) in [(1.0, 1), (1.49, 1), (1.5, 2), (4.49, 4), (4.5, 5), (8.5, 9), (9.0, 9)] {
++            assert_eq!(roll_rating(average), tier);
++        }
++    }
++}

@@ -1,0 +1,145 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const {test} = require('node:test');
+
+const root = path.resolve(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'ui/index.html'), 'utf8');
+const source = fs.readFileSync(path.join(root, 'ui/app.js'), 'utf8');
+const clip = {id:'clip-a', title:'A clip', extension:'mp4', duration_secs:3, width:96, height:64};
+function result(id='roll-a', multiplier=9, media=clip) {
+  return {id, multiplier, wager:2, payout:2*multiplier, balance:98+2*multiplier, clip:media, message:null};
+}
+function interfaceFixture() {
+  const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id]) => [id, {
+    innerHTML:'', textContent:'', value:id==='roll-wager'?'1':id==='library-sort'?'recency':'',
+    paused:true, ended:false, loop:true, playCount:0, pauseCount:0, loadCount:0,
+    listeners:{}, addEventListener(name,listener){this.listeners[name]=listener;},
+    classList:{toggle(){},add(){},remove(){}},
+    play(){this.paused=false;this.playCount++;return Promise.resolve();},
+    pause(){this.paused=true;this.pauseCount++;},load(){this.loadCount++;},
+    removeAttribute(name){delete this[name];},
+  }]));
+  const context = vm.createContext({
+    document:{
+      getElementById(id){assert.ok(elements.has(id),`Unknown element ${id}`);return elements.get(id);},
+      querySelector(selector){return selector.startsWith('meta')?{content:'test-token'}:{addEventListener(){}};},
+      querySelectorAll(){return [];},addEventListener(){},
+    },
+    window:{addEventListener(){}},
+    // Hold app startup so each case controls the state and responses.
+    fetch(){return new Promise(()=>{});},
+    FormData:class FormData {},setTimeout(){},clearTimeout(){},setInterval(){},
+  });
+  vm.runInContext(source,context);
+  context.fixture = {
+    balance:100,roll:null,settings:{display_name:'Peer',muted:true,volume:.5,bootstrap_peers:[],prefetch:true},
+    library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a',earned:0,
+  };
+  vm.runInContext('state=fixture;page="roll";',context);
+  return {context,elements,run(code){return vm.runInContext(code,context);},render(){vm.runInContext('renderRoll();',context);}};
+}
+
+test('Roll video has no loop and polling never replays an ended or paused result',()=>{
+  const app=interfaceFixture(),player=app.elements.get('roll-player');
+  assert.doesNotMatch(html.match(/<video id="roll-player"[^>]*>/)[0],/\bloop\b/);
+  assert.match(html.match(/<video id="player"[^>]*>/)[0],/\bloop\b/);
+  app.context.fixture.roll=result();app.render();
+  assert.equal(player.loop,false);
+  assert.equal(player.playCount,1);
+  const loads=player.loadCount;
+  player.paused=true;player.ended=true;
+  app.render();app.render();
+  assert.equal(player.playCount,1);
+  assert.equal(player.loadCount,loads);
+  player.ended=false;app.render();
+  assert.equal(player.playCount,1,'manual pause must be preserved');
+  app.context.fixture.roll=result('roll-b');app.render();
+  assert.equal(player.playCount,2,'same clip from a new roll starts afresh');
+  assert.equal(player.loadCount,loads+1);
+});
+
+test('zero clears the previous clip and a downloaded clip starts once when it arrives',()=>{
+  const app=interfaceFixture(),player=app.elements.get('roll-player');
+  app.context.fixture.roll=result();app.render();
+  app.context.fixture.roll=result('roll-zero',0,null);app.render();
+  assert.equal(player.src,undefined);
+  assert.equal(app.elements.get('roll-player-empty').hidden,false);
+  assert.match(app.elements.get('roll-waiting-title').textContent,/0×/);
+  assert.equal(player.playCount,1);
+  app.context.fixture.roll=result('roll-loading',9,null);app.render();
+  assert.equal(player.playCount,1);
+  app.context.fixture.roll.clip=clip;app.render();app.render();
+  assert.equal(player.playCount,2);
+});
+
+test('leaving Roll pauses playback and returning does not replay it',async()=>{
+  const app=interfaceFixture(),player=app.elements.get('roll-player');
+  app.context.fixture.roll=result();app.render();
+  app.context.fetch=async()=>({ok:true,json:async()=>app.context.fixture});
+  await app.run('navigate("seed")');
+  assert.equal(player.paused,true);
+  await app.run('navigate("roll")');
+  assert.equal(player.playCount,1);
+  app.run('page="seed"');
+  app.context.fixture.roll=result('roll-hidden');app.render();
+  assert.equal(player.playCount,1);
+  await app.run('navigate("roll")');
+  assert.equal(player.playCount,2,'new result prepared off-page starts on first visit');
+});
+
+test('invalid wagers and insufficient balances never submit a request',async()=>{
+  const app=interfaceFixture();let requests=0;
+  app.context.fetch=async()=>{requests++;throw Error('unexpected request');};
+  for(const value of ['', '0', '-1', 'NaN', 'Infinity', '1.0000001', '1e2', '101']){
+    app.elements.get('roll-wager').value=value;
+    await app.run('roll()');
+    assert.equal(requests,0,`invalid wager ${value}`);
+    assert.equal(app.elements.get('roll-error').hidden,false);
+  }
+  app.elements.get('roll-wager').value='.000001';app.render();
+  assert.equal(app.elements.get('roll-button').disabled,false);
+});
+
+test('submit sends wager once, disables controls in flight, and displays the saved payout',async()=>{
+  const app=interfaceFixture();const calls=[];let resolveRoll;
+  app.elements.get('roll-wager').value='2.125';
+  const outcome={...result(),wager:2.125,payout:19.125,balance:117};
+  app.context.fetch=async(url,options)=>{
+    calls.push({url,options});
+    if(url==='/api/roll')return new Promise(resolve=>{resolveRoll=()=>resolve({ok:true,json:async()=>outcome});});
+    return {ok:true,json:async()=>({...app.context.fixture,roll:outcome,balance:outcome.balance})};
+  };
+  const pending=app.run('roll()');
+  await app.run('roll()');
+  assert.equal(calls.length,1);
+  assert.deepEqual(JSON.parse(calls[0].options.body),{wager:2.125});
+  assert.equal(app.elements.get('roll-button').disabled,true);
+  assert.equal(app.elements.get('roll-wager').disabled,true);
+  resolveRoll();await pending;
+  assert.match(app.elements.get('roll-result-detail').textContent,/Total payout 19\.125/);
+  assert.equal(app.elements.get('roll-player').playCount,1);
+  assert.equal(app.elements.get('roll-wager').disabled,false);
+});
+
+test('API failure preserves the balance and shows its reason',async()=>{
+  const app=interfaceFixture();
+  app.context.fetch=async()=>({ok:false,json:async()=>({error:'Insufficient points'})});
+  await app.run('roll()');
+  assert.equal(app.context.fixture.balance,100);
+  assert.equal(app.elements.get('roll-error').textContent,'Insufficient points');
+  assert.equal(app.elements.get('roll-error').hidden,false);
+  assert.equal(app.elements.get('roll-wager').disabled,false);
+});
+
+test('result arriving after navigation stays paused',async()=>{
+  const app=interfaceFixture();let resolveRoll;
+  const outcome=result();
+  app.context.fetch=async url=>url==='/api/roll'?new Promise(resolve=>{resolveRoll=()=>resolve({ok:true,json:async()=>outcome});}):({ok:true,json:async()=>({...app.context.fixture,roll:outcome,balance:outcome.balance})});
+  const pending=app.run('roll()');
+  app.run('page="seed"');
+  resolveRoll();await pending;
+  assert.equal(app.elements.get('roll-player').playCount,0);
+});

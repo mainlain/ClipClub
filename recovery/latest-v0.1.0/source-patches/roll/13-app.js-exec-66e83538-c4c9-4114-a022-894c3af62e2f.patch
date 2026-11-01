@@ -1,0 +1,17 @@
+--- a/ui/app.js
++++ b/ui/app.js
+@@ -7,2 +7,3 @@
+ let rollBusy=false, rollMediaKey='', rollStartedKey='';
++let refreshVersion=0;
+ async function api(path, body, method='POST') {
+@@ -144,3 +145,4 @@
+     const result=await api('roll',{wager});
+-    state.roll=result;state.balance=result.balance;render();
++    // Ignore state polls begun before this wager completed.
++    refreshVersion++;state.roll=result;state.balance=result.balance;render();
+     await refresh();
+@@ -149,3 +151,3 @@
+ }
+-async function refresh(){try{state=await api('state',undefined,'GET');render();}catch(error){if(initialized)$('peer-status').textContent='Client disconnected';}}
++async function refresh(){const version=++refreshVersion;try{const next=await api('state',undefined,'GET');if(version!==refreshVersion)return;state=next;render();}catch(error){if(initialized&&version===refreshVersion)$('peer-status').textContent='Client disconnected';}}
+ async function rate(score){

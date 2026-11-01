@@ -1,0 +1,27 @@
+--- a/ui/style.css
++++ b/ui/style.css
+@@ -17,2 +17,24 @@
+ .clip-thumb{flex-shrink:0}
++.roll-form{margin-top:20px;padding:20px;border:1px solid var(--line);border-radius:5px}
++.roll-form>.field-label{margin-top:0}
++.roll-wager-row{display:flex;gap:10px}
++.roll-wager-row input{min-width:0;flex:1;font-variant-numeric:tabular-nums}
++.roll-wager-row .button{min-width:105px;flex-shrink:0}
++.roll-form .field-help{margin:12px 0 0}
++#roll-error{font-size:11px;color:#b44b2b;margin:12px 0 0;line-height:1.7}
++.roll-result{display:flex;align-items:center;gap:20px;margin-top:20px;padding:20px;background:#eaf0e2;border:1px solid #dce4d2;border-radius:5px}
++.roll-result>strong{font:400 44px Georgia;color:var(--orange);min-width:70px;line-height:1}
++.roll-result>div{min-width:0}
++.roll-result>div>span{font-size:13px;font-weight:500}
++.roll-result p{font-size:11px;margin:7px 0 0;font-variant-numeric:tabular-nums}
++.roll-clip-info{padding-top:17px}
++.roll-clip-info h3{font-size:12px;font-weight:500;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.roll-clip-info p{font-size:10px;margin:6px 0 0}
++.roll-odds{margin-top:12px}
++.roll-odds>div{display:flex;justify-content:space-between;gap:15px;padding:9px 0;border-bottom:1px solid var(--line);font-size:11px;font-variant-numeric:tabular-nums}
++.roll-odds>div:last-child{border:0;padding-bottom:0}
++.roll-odds strong{font-weight:500;color:#647658}
++.roll-odds span{color:var(--muted)}
++@media(max-width:850px){.roll-aside .queue-card{flex:none}.roll-odds{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.roll-odds>div:nth-last-child(2){border:0}.roll-aside .rating-help{margin-top:0}}
++@media(max-width:620px){.roll-form,.roll-result{padding:15px}.roll-result{gap:10px}.roll-result>strong{font-size:36px;min-width:60px}.roll-result p{font-size:10px}.roll-wager-row .button{min-width:85px}.roll-layout .player-empty{padding:16px}.roll-layout .player-empty p{line-height:1.6}}
+ @media(max-width:620px){.library-row{flex-wrap:wrap;gap:10px}.row-detail{flex-basis:calc(100% - 71px)}.row-actions{margin-left:auto}.library-sort{gap:5px}}
