@@ -1,24 +1,24 @@
 # Recovered points fork on Linux
 
-This is the v0.1.0 points recovery. Its normal profile is `$XDG_DATA_HOME/clipcrop-points` (default `~/.local/share/clipcrop-points`). The system package and launcher are `clipcrop-points`; the portable executable filename remains `clipcrop`. Linux fork binaries have not been rebuilt in this recovery; the instructions below describe how to build/package them. See [RECOVERY.md](../RECOVERY.md).
+This is the v0.1.0 points recovery. Its normal profile is `$XDG_DATA_HOME/clipcrop-points` (default `~/.local/share/clipcrop-points`). The system package and launcher are `clipclub`; the portable executable is also named `clipclub`. Linux fork binaries have not been rebuilt in this recovery; the instructions below describe how to build/package them. See [RECOVERY.md](../RECOVERY.md).
 
 # Linux
 
-ClipCrop uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interface, video validator, BitTorrent client, and peer mesh run in the same application process. No browser, Node.js, installed Rust toolchain, or separate FFmpeg installation is needed to run a bundled release.
+clipclub uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interface, video validator, BitTorrent client, and peer mesh run in the same application process. No browser, Node.js, installed Rust toolchain, or separate FFmpeg installation is needed to run a bundled release.
 
 ## Packages
 
 The x86-64 release targets Ubuntu 22.04 or a newer compatible desktop with GTK 3 and WebKitGTK 4.1. It contains an embedded Linux video validator; the OS WebView and GStreamer remain system libraries.
 
-- `clipcrop-points-0.1.0-linux-x86_64.tar.gz`: portable archive.
-- `clipcrop-points_0.1.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
-- `clipcrop-linux-x86_64-SHA256SUMS.txt`: artifact checksums.
+- `clipclub-0.1.0-linux-x86_64.tar.gz`: portable archive.
+- `clipclub_0.1.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
+- `clipclub-linux-x86_64-SHA256SUMS.txt`: artifact checksums.
 
 On Debian/Ubuntu, install the `.deb` and its runtime dependencies with:
 
 ```sh
-sudo apt install ./clipcrop-points_0.1.0_amd64.deb
-clipcrop-points
+sudo apt install ./clipclub_0.1.0_amd64.deb
+clipclub
 ```
 
 All launch methods store your profile in `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Removing the package does not remove that profile.
@@ -28,9 +28,9 @@ All launch methods store your profile in `$XDG_DATA_HOME/clipcrop-points`, defau
 Extract the archive and run:
 
 ```sh
-tar -xzf clipcrop-points-0.1.0-linux-x86_64.tar.gz
-cd clipcrop-points-0.1.0-linux-x86_64
-./clipcrop
+tar -xzf clipclub-0.1.0-linux-x86_64.tar.gz
+cd clipclub-0.1.0-linux-x86_64
+./clipclub
 ```
 
 Your identity, settings, points history, videos, and extracted validator live in the user data folder described above. Opening the app does not search for or create an adjacent profile in Downloads, and moving the executable preserves the same profile. Never share your profile's `identity.key`.
@@ -38,7 +38,7 @@ Your identity, settings, points history, videos, and extracted validator live in
 The packaged wrapper uses the same profile location:
 
 ```sh
-./launch-clipcrop
+./launch-clipclub
 ```
 
 Use `--data-dir PATH` with either executable or launcher to explicitly choose a profile folder, including a portable folder beside the executable.
@@ -57,7 +57,7 @@ sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 gstreamer1.0-plugins-base gstrea
 
 The supported distro/glibc baseline is recorded in the package's build information. Distribution package names can differ. MP4/WebM are validated before playback, but the actual video/audio codec must also be available to WebKitGTK/GStreamer.
 
-GTK selects X11 or Wayland according to your desktop session. ClipCrop uses Wry's GTK integration rather than its X11-only raw-window integration.
+GTK selects X11 or Wayland according to your desktop session. clipclub uses Wry's GTK integration rather than its X11-only raw-window integration.
 
 ## Optional application-menu entry
 
@@ -94,7 +94,7 @@ The builder verifies the pinned source archive checksums and writes the validato
 `scripts/package-linux.sh` packages an already-built Linux x86-64 executable without overwriting the macOS release. Its primary inputs are:
 
 ```sh
-export CLIPCROP_LINUX_BINARY="$PWD/target/release/clipcrop"
+export CLIPCROP_LINUX_BINARY="$PWD/target/release/clipclub"
 export CLIPCROP_LINUX_FFPROBE="$PWD/.build/linux-ffprobe/ffprobe"
 export CLIPCROP_LINUX_PROBE_VERSION_FILE="$PWD/.build/linux-ffprobe/version.txt"
 export CLIPCROP_LINUX_PROBE_LICENSE_REPORT="$PWD/.build/linux-ffprobe/license-report.txt"

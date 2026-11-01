@@ -1,4 +1,4 @@
-// Original ClipCrop vector mark, rendered natively without external packages.
+// Original clipclub vector mark, rendered natively without external packages.
 // Keep geometry in sync with assets/icon.svg.
 import Foundation
 import CoreGraphics

@@ -1,4 +1,4 @@
-# ClipCrop Points
+# clipclub
 
 Recovered latest pre-cryptocurrency v0.1.0 points fork. See [RECOVERY.md](RECOVERY.md) for recovery notes and verification results. This fork uses separate profile and application identities so it can coexist with the cryptocurrency project.
 
@@ -8,15 +8,15 @@ This is a working experimental implementation. Points are a signed peer-to-peer 
 
 ## Run
 
-On macOS, open `dist/ClipCrop Points.app`, or run the executable:
+On macOS, open `dist/clipclub.app`, or run the executable:
 
 ```sh
-./dist/clipcrop
+./dist/clipclub
 ```
 
 On macOS, your profile is stored in `~/Library/Application Support/ClipCrop Points`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-points-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
 
-The profile contains your private identity, points history, settings, watched history, uploaded files, and cached videos. Back up the entire profile directory; creating a different identity starts a new 100-point profile. This fork starts a separate profile and imports no existing application data. To recover personal data from the original points release, use `--data-dir` with a separate copy of a verified version-1 points profile. Cryptocurrency profiles use a different state format and cannot be opened by this version. Do not share `identity.key` with other people.
+The profile contains your private identity, points history, settings, watched history, uploaded files, and cached videos. Back up the entire profile directory; creating a different identity starts a new 100-point profile. The clipclub rename retains the original ClipCrop Points profile location, preserving existing identity, points, and library data. This fork imports no data from the cryptocurrency project. To recover personal data from the original points release, use `--data-dir` with a separate copy of a verified version-1 points profile. Cryptocurrency profiles use a different state format and cannot be opened by this version. Do not share `identity.key` with other people.
 
 The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. It does not install a background service.
 
@@ -90,8 +90,8 @@ The embedded UI is served only on `127.0.0.1`, with a fresh per-process access t
 On the same local network, open two instances with separate data directories and ports. mDNS discovery should connect them automatically:
 
 ```sh
-./dist/clipcrop --data-dir /tmp/clipcrop-alice --p2p-port 42931 --torrent-port 42932
-./dist/clipcrop --data-dir /tmp/clipcrop-bob --p2p-port 42933 --torrent-port 42934
+./dist/clipclub --data-dir /tmp/clipcrop-alice --p2p-port 42931 --torrent-port 42932
+./dist/clipclub --data-dir /tmp/clipcrop-bob --p2p-port 42933 --torrent-port 42934
 ```
 
 The commands run in separate terminals. For peers on different networks, save the other peer's full reachable multiaddress in Settings, for example:
@@ -147,7 +147,7 @@ This runs formatting when `rustfmt` is installed, all backend targets/tests, a d
 | `src/peer.rs` | Identity, discovery, authenticated gossip and presence |
 | `ui/` | Embedded minimalist interface and native WebView video element |
 
-ClipCrop's original source is MIT licensed. Third-party components retain their own licenses.
+clipclub's original source is MIT licensed. Third-party components retain their own licenses.
 
 ## Validation
 

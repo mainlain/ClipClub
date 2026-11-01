@@ -24,6 +24,7 @@ struct Options {
 fn macos_data_dir(home: Option<std::ffi::OsString>) -> Result<PathBuf> {
     let home = PathBuf::from(home.context("Cannot locate home folder; use --data-dir")?);
     anyhow::ensure!(home.is_absolute(), "Invalid home folder; use --data-dir");
+    // Keep the original profile location across app renames.
     // Never inspect a sibling profile: even checking Downloads can trigger a prompt.
     Ok(home.join("Library/Application Support/ClipCrop Points"))
 }
@@ -79,7 +80,7 @@ fn parse_options(
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Clipcrop — a peer-to-peer video commons\n\nOptions:\n  --data-dir PATH       Use a specific profile folder\n  --p2p-port PORT       Peer mesh TCP port (42931)\n  --torrent-port PORT   BitTorrent TCP port (42932)\n  --http-port PORT      Local interface port (random by default)\n  --headless            Serve the local interface without a desktop window"
+                    "clipclub — a peer-to-peer video commons\n\nOptions:\n  --data-dir PATH       Use a specific profile folder\n  --p2p-port PORT       Peer mesh TCP port (42931)\n  --torrent-port PORT   BitTorrent TCP port (42932)\n  --http-port PORT      Local interface port (random by default)\n  --headless            Serve the local interface without a desktop window"
                 );
                 return Ok(None);
             }
@@ -133,7 +134,7 @@ fn run() -> Result<()> {
         .open(lock_path)?;
     profile_lock
         .try_lock_exclusive()
-        .context("This profile is already open in another Clipcrop process")?;
+        .context("This profile is already open in another clipclub process")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -145,7 +146,7 @@ fn run() -> Result<()> {
     let app = runtime.block_on(app::App::start(options.root, options.p2p, options.torrent))?;
     let (url, _server) = runtime.block_on(http::serve(app.clone(), options.http))?;
     println!(
-        "Clipcrop interface: {url}\nPeer identity: {}",
+        "clipclub interface: {url}\nPeer identity: {}",
         app.mesh.peer_id
     );
     if options.headless {
@@ -181,7 +182,7 @@ fn desktop(
     };
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("ClipCrop Points")
+        .with_title("clipclub")
         .with_inner_size(LogicalSize::new(480.0, 620.0))
         .with_min_inner_size(LogicalSize::new(360.0, 480.0))
         .build(&event_loop)?;
@@ -222,7 +223,7 @@ fn desktop(
 }
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Clipcrop: {error:#}");
+        eprintln!("clipclub: {error:#}");
         std::process::exit(1);
     }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "clipcrop"
+name = "clipclub"
 version = "0.1.0"
 edition = "2024"
 description = "A small peer-to-peer video commons"

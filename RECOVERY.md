@@ -13,7 +13,7 @@ The recovered features use complete archived source patches. The final UI and av
 
 ## Separate application data
 
-The macOS app is `dist/ClipCrop Points.app`, using `~/Library/Application Support/ClipCrop Points`. Linux uses `$XDG_DATA_HOME/clipcrop-points` or `~/.local/share/clipcrop-points`. Default peer and BitTorrent ports are 42931 and 42932. Existing cryptocurrency profiles are incompatible and are never imported automatically.
+The macOS app is `dist/clipclub.app`, using `~/Library/Application Support/ClipCrop Points`. Linux uses `$XDG_DATA_HOME/clipcrop-points` or `~/.local/share/clipcrop-points`. Default peer and BitTorrent ports are 42931 and 42932. Existing cryptocurrency profiles are incompatible and are never imported automatically.
 
 ## Rebuild
 
@@ -22,7 +22,7 @@ The local toolchain and dependency cache support offline rebuilding on this Mac:
 ```sh
 CARGO_NET_OFFLINE=true ./scripts/check.sh
 CARGO_NET_OFFLINE=true ./scripts/package.sh
-python3 scripts/integration.py target/debug/clipcrop .build/ffmpeg
+python3 scripts/integration.py target/debug/clipclub .build/ffmpeg
 ```
 
 Linux source and packaging are present; a new Linux fork binary has not been built.

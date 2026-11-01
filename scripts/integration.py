@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local, real-process mesh/BitTorrent/HTTP integration test. No hosted services.
-Usage: python3 scripts/integration.py [path/to/clipcrop] [path/to/ffmpeg]
+Usage: python3 scripts/integration.py [path/to/clipclub] [path/to/ffmpeg]
 """
 import hashlib
 import http.client
@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / 'target/debug/clipcrop').resolve()
+BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / 'target/debug/clipclub').resolve()
 FFMPEG = Path(sys.argv[2] if len(sys.argv) > 2 else ROOT / '.build/ffmpeg').resolve()
 WORK = Path(tempfile.mkdtemp(prefix='clipcrop-e2e-'))
 PROCESSES = []

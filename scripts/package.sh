@@ -42,9 +42,9 @@ if [[ -n "$target_triple" ]]; then
 fi
 "$cargo_bin" "${build_args[@]}"
 
-binary_name=clipcrop
+binary_name=clipclub
 if [[ "$target_triple" == *windows* || "${OS:-}" == Windows_NT ]]; then
-  binary_name=clipcrop.exe
+  binary_name=clipclub.exe
 fi
 dist_directory="${CLIPCROP_DIST_DIR:-$project_root/dist}"
 mkdir -p "$dist_directory/third-party"
@@ -63,7 +63,7 @@ else
     > "$dist_directory/third-party/ffprobe-license-report.txt"
 fi
 
-metadata_file="$(mktemp "${TMPDIR:-/tmp}/clipcrop-metadata.XXXXXX")"
+metadata_file="$(mktemp "${TMPDIR:-/tmp}/clipclub-metadata.XXXXXX")"
 trap 'rm -f "$metadata_file"' EXIT
 "$cargo_bin" metadata --locked --format-version 1 > "$metadata_file"
 python3 - "$metadata_file" "$dist_directory/third-party" <<'PY'
@@ -76,7 +76,7 @@ metadata = json.loads(Path(sys.argv[1]).read_text())
 destination = Path(sys.argv[2])
 inventory = []
 for package in metadata["packages"]:
-    if package["name"] == "clipcrop":
+    if package["name"] == "clipclub":
         continue
     entry = {key: package.get(key) for key in ("name", "version", "license", "repository", "homepage")}
     inventory.append(entry)
@@ -96,26 +96,26 @@ inventory.sort(key=lambda entry: (entry["name"], entry["version"]))
 PY
 
 if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == *apple-darwin ) ]]; then
-  app_directory="$dist_directory/ClipCrop Points.app"
+  app_directory="$dist_directory/clipclub.app"
   mkdir -p "$app_directory/Contents/MacOS" "$app_directory/Contents/Resources"
-  cp "$dist_directory/clipcrop" "$app_directory/Contents/MacOS/clipcrop"
+  cp "$dist_directory/clipclub" "$app_directory/Contents/MacOS/clipclub"
   cp LICENSE THIRD_PARTY.md "$app_directory/Contents/Resources/"
   cp -R "$dist_directory/third-party" "$app_directory/Contents/Resources/"
-  icon_set="$project_root/.build/ClipCrop.iconset"
+  icon_set="$project_root/.build/clipclub.iconset"
   mkdir -p "$project_root/.build/swift-module-cache"
   swift -module-cache-path "$project_root/.build/swift-module-cache" \
     "$project_root/scripts/make-icon.swift" "$icon_set"
   python3 "$project_root/scripts/make-icns.py" "$icon_set" \
-    "$app_directory/Contents/Resources/ClipCrop.icns"
+    "$app_directory/Contents/Resources/clipclub.icns"
   cat > "$app_directory/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>ClipCrop Points</string>
-  <key>CFBundleDisplayName</key><string>ClipCrop Points</string>
-  <key>CFBundleIdentifier</key><string>local.clipcrop.points</string>
-  <key>CFBundleExecutable</key><string>clipcrop</string>
-  <key>CFBundleIconFile</key><string>ClipCrop.icns</string>
+  <key>CFBundleName</key><string>clipclub</string>
+  <key>CFBundleDisplayName</key><string>clipclub</string>
+  <key>CFBundleIdentifier</key><string>local.clipclub</string>
+  <key>CFBundleExecutable</key><string>clipclub</string>
+  <key>CFBundleIconFile</key><string>clipclub.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>

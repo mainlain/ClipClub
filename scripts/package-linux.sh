@@ -11,7 +11,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-binary_path="${CLIPCROP_LINUX_BINARY:-$project_root/target/x86_64-unknown-linux-gnu/release/clipcrop}"
+binary_path="${CLIPCROP_LINUX_BINARY:-$project_root/target/x86_64-unknown-linux-gnu/release/clipclub}"
 probe_path="${CLIPCROP_LINUX_FFPROBE:-}"
 probe_version_file="${CLIPCROP_LINUX_PROBE_VERSION_FILE:-}"
 probe_license_report="${CLIPCROP_LINUX_PROBE_LICENSE_REPORT:-}"
@@ -84,23 +84,23 @@ probe_url = os.environ.get('CLIPCROP_LINUX_PROBE_DOWNLOAD_URL', source_url)
 output_parent = root / 'dist'
 output_parent.mkdir(exist_ok=True)
 (root / '.build').mkdir(exist_ok=True)
-work = Path(tempfile.mkdtemp(prefix='clipcrop-linux-package-', dir=root / '.build'))
+work = Path(tempfile.mkdtemp(prefix='clipclub-linux-package-', dir=root / '.build'))
 folder = work / 'linux-x86_64'
 folder.mkdir()
 try:
-    shutil.copyfile(source, folder / 'clipcrop')
-    (folder / 'clipcrop').chmod(0o755)
+    shutil.copyfile(source, folder / 'clipclub')
+    (folder / 'clipclub').chmod(0o755)
     for source_name, target_name in [('LICENSE', 'LICENSE'), ('README.md', 'README.md'),
                                     ('docs/LINUX.md', 'LINUX.md'),
-                                    ('assets/icon.svg', 'clipcrop.svg'),
+                                    ('assets/icon.svg', 'clipclub.svg'),
                                     ('scripts/install-linux-desktop.sh', 'install-desktop.sh')]:
         shutil.copyfile(root / source_name, folder / target_name)
     (folder / 'install-desktop.sh').chmod(0o755)
-    (folder / 'launch-clipcrop').write_text(
+    (folder / 'launch-clipclub').write_text(
         '#!/bin/sh\nset -eu\n'
         'application_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-        'exec "$application_directory/clipcrop" "$@"\n')
-    (folder / 'launch-clipcrop').chmod(0o755)
+        'exec "$application_directory/clipclub" "$@"\n')
+    (folder / 'launch-clipclub').chmod(0o755)
 
     third_party = folder / 'third-party'
     third_party.mkdir()
@@ -177,7 +177,7 @@ try:
     else:
         notice = (
             '# Third-party software\n\n'
-            'ClipCrop\'s original source is MIT licensed; see LICENSE. Other programs retain their own licenses.\n\n'
+            'clipclub\'s original source is MIT licensed; see LICENSE. Other programs retain their own licenses.\n\n'
             '## Linux FFmpeg / ffprobe\n\n'
             f'This Linux package embeds the separate-process validator identified in `third-party/ffprobe-version.txt`. '
             f'The selected x86-64 executable has SHA-256 `{hashlib.sha256(probe.read_bytes()).hexdigest()}`. '
@@ -190,7 +190,7 @@ try:
             '- FFmpeg license information: https://ffmpeg.org/legal.html\n\n' + rust_section)
     (folder / 'THIRD_PARTY.md').write_text(notice)
     build_info = {
-        'application': 'clipcrop-points', 'version': version, 'target': 'x86_64-unknown-linux-gnu',
+        'application': 'clipclub', 'version': version, 'target': 'x86_64-unknown-linux-gnu',
         'baseline': baseline, 'application_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
         'ffprobe_sha256': hashlib.sha256(probe.read_bytes()).hexdigest(),
         'ffprobe_version': version_report.splitlines()[0],
@@ -206,7 +206,7 @@ try:
     (folder / 'BUILD-INFO.json').write_text(json.dumps(build_info, indent=2) + '\n')
 
     # Build a portable tar archive with a versioned top-level folder.
-    archive_name = f'clipcrop-points-{version}-linux-x86_64'
+    archive_name = f'clipclub-{version}-linux-x86_64'
     portable = work / f'{archive_name}.tar.gz'
     def filter_tar(info):
         info.uid = info.gid = 0
@@ -221,21 +221,21 @@ try:
     # Debian package: binary under /opt, launcher on PATH, normal desktop entry.
     # User state is always outside the read-only installed application directory.
     deb_root = work / 'debian'
-    opt = deb_root / 'opt/clipcrop-points'
+    opt = deb_root / 'opt/clipclub'
     opt.mkdir(parents=True)
     shutil.copytree(folder, opt, dirs_exist_ok=True)
     bin_dir = deb_root / 'usr/bin'; bin_dir.mkdir(parents=True)
-    launcher = bin_dir / 'clipcrop-points'
-    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipcrop-points/clipcrop "$@"\n')
+    launcher = bin_dir / 'clipclub'
+    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipclub/clipclub "$@"\n')
     launcher.chmod(0o755)
     applications = deb_root / 'usr/share/applications'; applications.mkdir(parents=True)
-    (applications / 'local.clipcrop.points.desktop').write_text(
-        '[Desktop Entry]\nType=Application\nVersion=1.0\nName=ClipCrop Points\n'
-        'Comment=A small peer-to-peer video commons\nExec=clipcrop-points\nIcon=clipcrop-points\n'
+    (applications / 'local.clipclub.desktop').write_text(
+        '[Desktop Entry]\nType=Application\nVersion=1.0\nName=clipclub\n'
+        'Comment=A small peer-to-peer video commons\nExec=clipclub\nIcon=clipclub\n'
         'Terminal=false\nCategories=AudioVideo;Video;Network;\nStartupNotify=true\n')
     icons = deb_root / 'usr/share/icons/hicolor/scalable/apps'; icons.mkdir(parents=True)
-    shutil.copyfile(root / 'assets/icon.svg', icons / 'clipcrop-points.svg')
-    doc_dir = deb_root / 'usr/share/doc/clipcrop-points'; doc_dir.mkdir(parents=True)
+    shutil.copyfile(root / 'assets/icon.svg', icons / 'clipclub.svg')
+    doc_dir = deb_root / 'usr/share/doc/clipclub'; doc_dir.mkdir(parents=True)
     shutil.copyfile(root / 'LICENSE', doc_dir / 'copyright')
     shutil.copyfile(folder / 'LINUX.md', doc_dir / 'README.md')
 
@@ -244,9 +244,9 @@ try:
         'gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav')
     installed_size = sum(path.stat().st_size for path in deb_root.rglob('*') if path.is_file()) // 1024
     control = (
-        f'Package: clipcrop-points\nVersion: {version}\nSection: video\nPriority: optional\n'
+        f'Package: clipclub\nVersion: {version}\nSection: video\nPriority: optional\n'
         f'Architecture: amd64\nInstalled-Size: {installed_size}\n'
-        f'Depends: {dependencies}\nMaintainer: ClipCrop contributors <clipcrop@localhost>\n'
+        f'Depends: {dependencies}\nMaintainer: clipclub contributors <clipclub@localhost>\n'
         'Description: A small peer-to-peer video commons\n'
         ' Share short MP4/WebM clips through BitTorrent, watch and rate videos,\n'
         ' and exchange experimental points using signed peer-to-peer receipts.\n'
@@ -266,7 +266,7 @@ try:
             with tarfile.open(fileobj=compressed, mode='w', format=tarfile.GNU_FORMAT) as archive:
                 for path in sorted(deb_root.iterdir()):
                     archive.add(path, arcname='./' + path.name, filter=filter_tar)
-    deb_path = work / f'clipcrop-points_{version}_amd64.deb'
+    deb_path = work / f'clipclub_{version}_amd64.deb'
     with deb_path.open('wb') as deb:
         deb.write(b'!<arch>\n')
         for name, value in [('debian-binary', b'2.0\n'), ('control.tar.gz', control_buffer.getvalue()), ('data.tar.gz', data_path)]:
@@ -286,7 +286,7 @@ try:
     final_folder = output_parent / 'linux-x86_64'
     if final_folder.exists():
         # Refuse to replace a folder in which someone already ran a portable profile.
-        if any((final_folder / name).exists() for name in ('clipcrop-data', 'clipcrop-points-data')):
+        if any((final_folder / name).exists() for name in ('clipcrop-data', 'clipcrop-points-data', 'clipclub-data')):
             raise SystemExit('dist/linux-x86_64 contains a profile; move it out before replacing the package')
         shutil.rmtree(final_folder)
     shutil.move(str(folder), final_folder)
@@ -295,7 +295,7 @@ try:
         target = output_parent / artifact.name
         os.replace(artifact, target)
         artifacts.append(target)
-    checksums = output_parent / 'clipcrop-linux-x86_64-SHA256SUMS.txt'
+    checksums = output_parent / 'clipclub-linux-x86_64-SHA256SUMS.txt'
     checksums.write_text(''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n' for path in artifacts))
     print('Linux folder:', final_folder)
     for artifact in artifacts:

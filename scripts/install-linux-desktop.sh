@@ -3,13 +3,13 @@ set -euo pipefail
 
 # The packaged copy lives alongside the executable and original SVG icon.
 installer_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-program_path="${1:-$installer_directory/clipcrop}"
+program_path="${1:-$installer_directory/clipclub}"
 if [[ "$(uname -s)" != Linux ]]; then
   printf 'This launcher installer is for Linux.\n' >&2
   exit 1
 fi
 if [[ ! -x "$program_path" ]]; then
-  printf 'Pass the path to the extracted ClipCrop executable.\n' >&2
+  printf 'Pass the path to the extracted clipclub executable.\n' >&2
   exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -41,17 +41,17 @@ def desktop_string(value):
 
 applications = data_root / 'applications'
 applications.mkdir(parents=True, exist_ok=True)
-icon = program.parent / 'clipcrop.svg'
+icon = program.parent / 'clipclub.svg'
 if not icon.is_file():
     # Source-tree invocation can use the original asset.
     icon = program.parent.parent.parent / 'assets/icon.svg'
 icon_value = desktop_string(icon) if icon.is_file() else 'video-x-generic'
-entry = applications / 'local.clipcrop.points.desktop'
+entry = applications / 'local.clipclub.desktop'
 entry.write_text(
     '[Desktop Entry]\n'
     'Type=Application\n'
     'Version=1.0\n'
-    'Name=ClipCrop Points\n'
+    'Name=clipclub\n'
     'Comment=A small peer-to-peer video commons\n'
     f'Exec={exec_argument(program)}\n'
     f'Icon={icon_value}\n'
