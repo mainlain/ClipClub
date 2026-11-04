@@ -55,7 +55,6 @@ pub async fn serve(
         .route("/", get(index))
         .route("/app.js", get(js))
         .route("/style.css", get(css))
-        .route("/joah.svg", get(logo))
         .route("/joah.png", get(logo_png))
         .route("/api/state", get(status))
         .route("/api/crypto", get(crypto_status))
@@ -150,12 +149,6 @@ async fn css() -> impl IntoResponse {
 }
 async fn status(State(state): State<HttpState>) -> Json<Value> {
     Json(state.app.state().await)
-}
-async fn logo() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "image/svg+xml")],
-        include_str!("../assets/joah.svg"),
-    )
 }
 async fn logo_png() -> impl IntoResponse {
     (

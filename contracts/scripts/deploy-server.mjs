@@ -41,9 +41,8 @@ export function createReviewServer(review,{sessionToken=randomBytes(32).toString
     const expectedHost=origin&&new URL(origin).host;
     if(request.headers.host!==expectedHost||request.headers.origin&&request.headers.origin!==origin){send(403,'Invalid local request.');return;}
     if(request.method!=='GET'){send(405,'Read-only review server.');return;}
-    if(request.url==='/joah.svg'||request.url==='/joah.png'){
-      const png=request.url==='/joah.png';
-      send(200,fs.readFileSync(path.join(root,'..','assets',png?'joah-256.png':'joah.svg')),png?'image/png':'image/svg+xml; charset=utf-8');return;
+    if(request.url==='/joah.png'){
+      send(200,fs.readFileSync(path.join(root,'..','assets','joah-256.png')),'image/png');return;
     }
     if(request.url==='/api/deployment'){
       if(!sameSecret(request.headers['x-deployment-token'],sessionToken)){send(401,'Invalid review session.');return;}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The packaged copy lives alongside the executable and original SVG icon.
+# The packaged copy lives alongside the executable and fireworks PNG icon.
 installer_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 program_path="${1:-$installer_directory/clipclub}"
 if [[ "$(uname -s)" != Linux ]]; then
@@ -41,10 +41,10 @@ def desktop_string(value):
 
 applications = data_root / 'applications'
 applications.mkdir(parents=True, exist_ok=True)
-icon = program.parent / 'clipclub.svg'
+icon = program.parent / 'clipclub.png'
 if not icon.is_file():
     # Source-tree invocation can use the original asset.
-    icon = program.parent.parent.parent / 'assets/icon.svg'
+    icon = program.parent.parent.parent / 'assets/icon.png'
 icon_value = desktop_string(icon) if icon.is_file() else 'video-x-generic'
 entry = applications / 'local.clipclub.desktop'
 entry.write_text(

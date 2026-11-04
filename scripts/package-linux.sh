@@ -92,7 +92,7 @@ try:
     (folder / 'clipclub').chmod(0o755)
     for source_name, target_name in [('LICENSE', 'LICENSE'), ('README.md', 'README.md'),
                                     ('docs/LINUX.md', 'LINUX.md'),
-                                    ('assets/icon.svg', 'clipclub.svg'),
+                                    ('assets/icon.png', 'clipclub.png'),
                                     ('scripts/install-linux-desktop.sh', 'install-desktop.sh')]:
         shutil.copyfile(root / source_name, folder / target_name)
     (folder / 'install-desktop.sh').chmod(0o755)
@@ -233,8 +233,8 @@ try:
         '[Desktop Entry]\nType=Application\nVersion=1.0\nName=clipclub\n'
         'Comment=A small peer-to-peer video commons\nExec=clipclub\nIcon=clipclub\n'
         'Terminal=false\nCategories=AudioVideo;Video;Network;\nStartupNotify=true\n')
-    icons = deb_root / 'usr/share/icons/hicolor/scalable/apps'; icons.mkdir(parents=True)
-    shutil.copyfile(root / 'assets/icon.svg', icons / 'clipclub.svg')
+    icons = deb_root / 'usr/share/icons/hicolor/512x512/apps'; icons.mkdir(parents=True)
+    shutil.copyfile(root / 'assets/icon.png', icons / 'clipclub.png')
     doc_dir = deb_root / 'usr/share/doc/clipclub'; doc_dir.mkdir(parents=True)
     shutil.copyfile(root / 'LICENSE', doc_dir / 'copyright')
     shutil.copyfile(folder / 'LINUX.md', doc_dir / 'README.md')

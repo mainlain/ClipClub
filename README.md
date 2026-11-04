@@ -65,7 +65,7 @@ The validator has a timeout, bounded output and allocation settings, a demuxer a
 
 ## 좋아 on MegaETH
 
-The name is **좋아**, the ERC-20 symbol is **✨**, and the logo is [the 256×256 fireworks SVG](assets/joah.svg), with a [256×256 PNG](assets/joah-256.png) for the MegaETH token list. Explorer-specific sizes and export instructions are in [the asset guide](assets/README.md). One token is 1,000,000 base units. Every monetary API uses decimal integer strings; neither JavaScript numbers nor floating-point JSON amounts determine balances or payouts.
+The name is **좋아**, the ERC-20 symbol is **✨**, and the logo is the [multicolor fireworks image](assets/fireworks.png), shared with the desktop icon. A [256×256 PNG](assets/joah-256.png) is available for token lists and wallets. Explorer-specific sizes and export instructions are in [the asset guide](assets/README.md). One token is 1,000,000 base units. Every monetary API uses decimal integer strings; neither JavaScript numbers nor floating-point JSON amounts determine balances or payouts.
 
 The wallet deployment review can be opened with:
 
@@ -163,7 +163,7 @@ For a portable release with `ffprobe` embedded in the executable:
 CLIPCROP_FFPROBE="$PWD/vendor/ffprobe" ./scripts/package.sh
 ```
 
-`package.sh` requires Python 3 to collect dependency notices and the Xcode Swift tools on macOS to render the original vector app icon. It uses an installed Cargo, or the workspace-local `.build/cargo/bin/cargo` toolchain if Cargo is not on `PATH`. You can select Cargo explicitly with `CLIPCROP_CARGO`. `CLIPCROP_FFPROBE` must be an absolute path to an executable for the same target as the app; the script resolves the path before building. For a cross-build, set `CLIPCROP_TARGET` and provide the matching probe. A bundled build extracts its verified embedded probe into the profile directory on first launch. No user-installed FFmpeg is required for that release.
+`package.sh` requires Python 3 to collect dependency notices and the Xcode Swift tools on macOS to resize the shared fireworks image into the macOS app icon. It uses an installed Cargo, or the workspace-local `.build/cargo/bin/cargo` toolchain if Cargo is not on `PATH`. You can select Cargo explicitly with `CLIPCROP_CARGO`. `CLIPCROP_FFPROBE` must be an absolute path to an executable for the same target as the app; the script resolves the path before building. For a cross-build, set `CLIPCROP_TARGET` and provide the matching probe. A bundled build extracts its verified embedded probe into the profile directory on first launch. No user-installed FFmpeg is required for that release.
 
 Packaging creates the direct executable, a macOS app bundle on macOS, and license notices in `dist`. These are local development packages; the app is not notarized. The default vendored probe is a GPLv3-or-later third-party build. Its exact version, checksum, source links, and redistribution caveats are in [THIRD_PARTY.md](THIRD_PARTY.md). Public release CI instead builds a minimal validator from pinned upstream FFmpeg/dav1d source and retains the source, build recipe, configuration, and notices in each release package; see [release instructions](docs/RELEASES.md).
 
