@@ -61,6 +61,7 @@ pub async fn serve(
         .route("/api/crypto", get(crypto_status))
         .route("/api/crypto/transaction", post(crypto_transaction))
         .route("/api/crypto/pending", post(crypto_pending))
+        .route("/api/crypto/confirm-account", post(confirm_account))
         .route("/api/wallet", post(wallet))
         .route("/api/wallet/browser", post(wallet_browser))
         .route("/api/upload", post(upload))
@@ -191,6 +192,7 @@ struct Wallet {
 }
 async fn wallet(State(state): State<HttpState>, Json(input): Json<Wallet>) -> ApiResult {
     state.app.crypto.set_wallet(input.address).await?;
+    state.app.announce().await;
     Ok(Json(json!({"ok":true})))
 }
 async fn wallet_browser(State(state): State<HttpState>) -> ApiResult {
@@ -253,6 +255,28 @@ async fn rate(State(state): State<HttpState>, Json(input): Json<Rate>) -> ApiRes
 #[serde(deny_unknown_fields)]
 struct RatingSessionConfirmation {
     transaction_hash: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountConfirmation {
+    transaction_hash: String,
+    action: String,
+}
+async fn confirm_account(
+    State(state): State<HttpState>,
+    Json(input): Json<AccountConfirmation>,
+) -> ApiResult {
+    state
+        .app
+        .crypto
+        .confirm_account_action(
+            &input.transaction_hash,
+            &input.action,
+            &state.app.mesh.peer_id,
+        )
+        .await?;
+    state.app.announce().await;
+    Ok(Json(json!({"confirmed":true})))
 }
 async fn rating_session_confirm(
     State(state): State<HttpState>,

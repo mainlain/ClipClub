@@ -1,6 +1,6 @@
 use crate::{
     core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Settings, Store},
-    crypto::{ChainRoll, Crypto},
+    crypto::{ChainRoll, Crypto, SeederDistribution, SeederRecipient},
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
     torrent::{self, PreparedTorrent, TorrentEngine},
@@ -45,6 +45,8 @@ pub struct App {
 struct Presence {
     name: String,
     seeded: Vec<String>,
+    permanent: Vec<String>,
+    wallet: Option<String>,
     endpoint: Option<SocketAddr>,
     seen: Instant,
 }
@@ -70,8 +72,8 @@ struct VerifiedRatingGroup {
 #[derive(Default)]
 struct Runtime {
     rating_proofs: BTreeMap<String, VerifiedRatingGroup>,
-    beneficiaries: BTreeMap<String, String>,
-    beneficiaries_at: Option<Instant>,
+    seeder_wallets_at: Option<Instant>,
+    seeder_wallets: BTreeMap<String, String>,
     peers: BTreeMap<String, Presence>,
     addresses: BTreeSet<String>,
     ready: VecDeque<String>,
@@ -91,6 +93,30 @@ struct Runtime {
 
 fn roll_rating(average: f64) -> u8 {
     average.round().clamp(1.0, 9.0) as u8
+}
+
+fn seeder_candidates(
+    peers: &BTreeMap<String, Presence>,
+    clip: &str,
+    rater_wallet: &str,
+) -> Vec<SeederRecipient> {
+    peers
+        .iter()
+        .filter_map(|(peer, p)| {
+            if p.seen.elapsed() >= Duration::from_secs(65)
+                || !p.permanent.iter().any(|id| id == clip)
+            {
+                return None;
+            }
+            p.wallet
+                .as_ref()
+                .filter(|wallet| !wallet.eq_ignore_ascii_case(rater_wallet))
+                .map(|wallet| SeederRecipient {
+                    peer: peer.clone(),
+                    wallet: wallet.clone(),
+                })
+        })
+        .collect()
 }
 
 pub fn prepared(clip: &Clip) -> Result<PreparedTorrent> {
@@ -247,7 +273,8 @@ impl App {
         self.runtime.lock().await.notice = Some(message.to_owned());
         eprintln!("{message}");
     }
-    async fn announce(&self) {
+    pub async fn announce(&self) {
+        let wallet = self.crypto.selected_wallet().await;
         let store = self.store.lock().await;
         let runtime = self.runtime.lock().await;
         let ids: Vec<String> = runtime
@@ -263,11 +290,12 @@ impl App {
             .filter_map(|id| store.data.catalog.get(id).cloned())
             .collect();
         let name = store.data.settings.display_name.clone();
+        let permanent = runtime.permanent.keys().cloned().collect();
         drop(runtime);
         drop(store);
         if let Err(error) = self
             .mesh
-            .announce(clips, ids, name, self.torrent_port)
+            .announce(clips, ids, name, self.torrent_port, permanent, wallet)
             .await
         {
             self.notice(&error.to_string()).await;
@@ -319,13 +347,30 @@ impl App {
                 peer,
                 name,
                 seeded,
+                permanent,
+                wallet,
                 torrent_addr,
             } => {
+                if peer == self.mesh.peer_id {
+                    return;
+                }
+                if let Err(error) = self
+                    .store
+                    .lock()
+                    .await
+                    .observe_peer(&peer, crate::core::current_time_ms())
+                {
+                    self.notice(&format!("Could not save peer activity: {error}"))
+                        .await;
+                    return;
+                }
                 self.runtime.lock().await.peers.insert(
                     peer,
                     Presence {
                         name,
                         seeded,
+                        permanent,
+                        wallet,
                         endpoint: torrent_addr,
                         seen: Instant::now(),
                     },
@@ -448,37 +493,38 @@ impl App {
     pub async fn state(self: &Arc<Self>) -> Value {
         let mut crypto = self.crypto.state().await;
         if crypto["configured"] == true && crypto["error"].is_null() {
-            let store = self.store.lock().await;
-            let rt = self.runtime.lock().await;
-            let ids: Vec<String> = store
-                .data
-                .library
-                .keys()
-                .cloned()
-                .chain(rt.ready.iter().cloned())
-                .collect();
-            let refresh = rt
-                .beneficiaries_at
+            let refresh = self
+                .runtime
+                .lock()
+                .await
+                .seeder_wallets_at
                 .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
-            drop(rt);
-            drop(store);
+            let candidates = self
+                .runtime
+                .lock()
+                .await
+                .peers
+                .iter()
+                .filter_map(|(peer, p)| {
+                    (!p.permanent.is_empty() && p.seen.elapsed() < Duration::from_secs(65))
+                        .then(|| {
+                            p.wallet.as_ref().map(|wallet| SeederRecipient {
+                                peer: peer.clone(),
+                                wallet: wallet.clone(),
+                            })
+                        })
+                        .flatten()
+                })
+                .collect();
             if refresh {
-                let mut beneficiaries = BTreeMap::new();
-                let mut succeeded = true;
-                for chunk in ids.chunks(100) {
-                    match self.crypto.beneficiaries(chunk).await {
-                        Ok(values) => beneficiaries.extend(values),
-                        Err(_) => {
-                            succeeded = false;
-                            break;
-                        }
+                match self.crypto.eligible_seeders(candidates).await {
+                    Ok(eligible) => {
+                        self.runtime.lock().await.seeder_wallets =
+                            eligible.into_iter().map(|r| (r.peer, r.wallet)).collect()
                     }
+                    Err(_) => self.runtime.lock().await.seeder_wallets.clear(),
                 }
-                if succeeded {
-                    let mut rt = self.runtime.lock().await;
-                    rt.beneficiaries = beneficiaries;
-                    rt.beneficiaries_at = Some(Instant::now());
-                }
+                self.runtime.lock().await.seeder_wallets_at = Some(Instant::now());
             }
         }
         if let Some(roll) = self.crypto.current_roll().await {
@@ -508,6 +554,12 @@ impl App {
             }
         }
         let local = &store.data.profile_id;
+        let population = store.monthly_population(crate::core::current_time_ms());
+        crypto["seeder_registered"] = json!(
+            crypto["seeder_peer_commitment"]
+                .as_str()
+                .is_some_and(|s| s == self.crypto.peer_commitment(&self.mesh.peer_id))
+        );
         let stats = store.clip_stats();
         let library: Vec<Value> = store
             .data
@@ -526,7 +578,6 @@ impl App {
                     "clip":clip,
                     "seeding":rt.permanent.contains_key(&clip.id),
                     "added_at_ms":local.added_at_ms,
-                    "beneficiary":rt.beneficiaries.get(&clip.id),
                     "average_rating":stats.and_then(|s| s.average_rating()),
                     "rating_count":stats.map_or(0, |s| s.rating_count)
                 })
@@ -538,7 +589,26 @@ impl App {
             .filter_map(|id| store.data.catalog.get(id))
             .map(|clip| {
                 let mut value = serde_json::to_value(clip).expect("clip serializes");
-                value["beneficiary"] = json!(rt.beneficiaries.get(&clip.id));
+                let count = rt
+                    .peers
+                    .iter()
+                    .filter(|(peer, p)| {
+                        p.seen.elapsed() < Duration::from_secs(65)
+                            && p.permanent.contains(&clip.id)
+                            && rt.seeder_wallets.get(*peer).is_some_and(|wallet| {
+                                Some(wallet.as_str()) != crypto["wallet"].as_str()
+                            })
+                    })
+                    .count();
+                let rewards: Vec<String> = (0..=9)
+                    .map(|score| {
+                        crate::rating_distribution::reward_micropoints(score, count, population)
+                            .unwrap_or(0)
+                            .to_string()
+                    })
+                    .collect();
+                value["distribution_preview"] =
+                    json!({"seeders":count,"population":population,"reward_units":rewards});
                 value
             })
             .collect();
@@ -546,7 +616,7 @@ impl App {
             let stats = handle.stats();
             json!({"id":id,"downloaded":stats.progress_bytes,"total":stats.total_bytes})
         });
-        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
+        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"population":population,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
     }
     pub async fn upload(&self, filename: String, bytes: Vec<u8>) -> Result<Value> {
         let _guard = self.mutation.lock().await;
@@ -723,7 +793,23 @@ impl App {
         };
         // Saving the unpaid draft is the only authoritative action here. No
         // monetary receipt or watched marker exists before batch settlement.
-        let session = self.crypto.queue_rating(id, score).await?;
+        let wallet = self
+            .crypto
+            .selected_wallet()
+            .await
+            .context("Select a wallet before rating")?;
+        let population = self
+            .store
+            .lock()
+            .await
+            .monthly_population(crate::core::current_time_ms());
+        let candidates = seeder_candidates(&self.runtime.lock().await.peers, &clip.id, &wallet);
+        let recipients = self.crypto.eligible_seeders(candidates).await?;
+        let distribution = SeederDistribution::new(score, population, recipients)?;
+        let session = self
+            .crypto
+            .queue_seeder_rating(id, score, distribution)
+            .await?;
         let mut rt = self.runtime.lock().await;
         let seed_now = rt.session
             && rt.permanent.len() + rt.temporary.len() < MAX_LIBRARY_FILES
@@ -1256,6 +1342,37 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_fresh_permanent_seeders_with_another_wallet_can_receive_rating_rewards() {
+        let rater = "0x1111111111111111111111111111111111111111";
+        let wallet = "0x2222222222222222222222222222222222222222";
+        let presence = |permanent, wallet: &str, age| Presence {
+            name: "peer".into(),
+            seeded: vec!["clip".into()],
+            permanent,
+            wallet: Some(wallet.into()),
+            endpoint: None,
+            seen: Instant::now() - Duration::from_secs(age),
+        };
+        let peers = BTreeMap::from([
+            ("eligible".into(), presence(vec!["clip".into()], wallet, 0)),
+            ("temporary".into(), presence(vec![], wallet, 0)),
+            ("expired".into(), presence(vec!["clip".into()], wallet, 66)),
+            ("self".into(), presence(vec!["clip".into()], rater, 0)),
+            (
+                "another-clip".into(),
+                presence(vec!["different".into()], wallet, 0),
+            ),
+        ]);
+        assert_eq!(
+            seeder_candidates(&peers, "clip", rater),
+            vec![SeederRecipient {
+                peer: "eligible".into(),
+                wallet: wallet.into()
+            }]
+        );
+    }
 
     #[test]
     fn roll_rating_uses_nearest_integer_tiers() {

@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 
 const DRAND: &str = "https://api.drand.sh/v2/chains/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/rounds/";
 const GENESIS: u64 = 1692803367;
+// A full 1,000-seeder settlement includes both ERC-20 Transfer and SeederPaid
+// logs. Its canonical RPC receipt can exceed one megabyte.
+const MAX_RPC_RESPONSE_BYTES: usize = 4_000_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ChainRoll {
@@ -40,6 +43,70 @@ struct Journal {
 pub struct SessionRating {
     pub clip_id: String,
     pub score: u8,
+    /// Absent only on legacy single-recipient drafts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution: Option<SeederDistribution>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SeederRecipient {
+    pub peer: String,
+    pub wallet: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SeederDistribution {
+    pub population: usize,
+    pub reward_units: String,
+    pub recipients: Vec<SeederRecipient>,
+}
+impl SeederDistribution {
+    pub fn new(score: u8, population: usize, recipients: Vec<SeederRecipient>) -> Result<Self> {
+        let reward =
+            crate::rating_distribution::reward_micropoints(score, recipients.len(), population)?;
+        let distribution = Self {
+            population,
+            reward_units: reward.to_string(),
+            recipients,
+        };
+        distribution.validate(score)?;
+        Ok(distribution)
+    }
+    fn validate(&self, score: u8) -> Result<()> {
+        ensure!(
+            !self.recipients.is_empty() && self.recipients.len() <= 1000,
+            "A rating requires 1–1000 eligible permanent seeders"
+        );
+        let mut peers = std::collections::BTreeSet::new();
+        let mut previous = String::new();
+        for recipient in &self.recipients {
+            ensure!(
+                recipient.peer.parse::<libp2p::PeerId>().is_ok() && peers.insert(&recipient.peer),
+                "Invalid or duplicate seeder identity"
+            );
+            let wallet = address(&recipient.wallet)?;
+            ensure!(
+                wallet == recipient.wallet && wallet > previous,
+                "Seeder wallets must be distinct and sorted"
+            );
+            previous = wallet;
+        }
+        ensure!(
+            self.reward_units
+                == crate::rating_distribution::reward_micropoints(
+                    score,
+                    self.recipients.len(),
+                    self.population
+                )?
+                .to_string(),
+            "Seeder reward disagrees with the local curve"
+        );
+        Ok(())
+    }
+    pub fn payout_units(&self) -> Result<u64> {
+        self.reward_units
+            .parse::<u64>()?
+            .checked_mul(self.recipients.len() as u64)
+            .context("Seeder payout overflow")
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RatingSession {
@@ -64,19 +131,42 @@ impl RatingSession {
         );
         let mut clips = std::collections::BTreeSet::new();
         let mut total = 0u64;
+        let mut payments = 0usize;
+        let seeder_mode = self.ratings[0].distribution.is_some();
         for rating in &self.ratings {
             ensure!(
                 bytes32(&rating.clip_id)? == rating.clip_id && clips.insert(&rating.clip_id),
                 "Invalid or repeated session clip"
             );
             ensure!((1..=9).contains(&rating.score), "Invalid session rating");
+            ensure!(
+                rating.distribution.is_some() == seeder_mode,
+                "Legacy and seeder payments cannot share a session"
+            );
+            if let Some(distribution) = &rating.distribution {
+                distribution.validate(rating.score)?;
+                payments += distribution.recipients.len();
+            }
             total += u64::from(rating.score) * 1_000_000;
         }
+        ensure!(
+            payments <= 1000,
+            "Settle this session before adding more seeder payments (maximum 1000)"
+        );
         ensure!(
             self.total_units == total.to_string(),
             "Invalid session total"
         );
         Ok(())
+    }
+    pub fn payout_units(&self) -> Result<u64> {
+        self.ratings.iter().try_fold(0u64, |sum, rating| {
+            let payout = match &rating.distribution {
+                Some(distribution) => distribution.payout_units()?,
+                None => u64::from(rating.score) * 1_000_000,
+            };
+            sum.checked_add(payout).context("Session payout overflow")
+        })
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -122,6 +212,12 @@ impl PendingTransaction {
             );
         }
         let valid = match self.action.as_str() {
+            "register_seeder" => {
+                self.clip_id.is_none()
+                    && self.score.is_none()
+                    && self.roll_id.is_none()
+                    && self.wager_units.is_none()
+            }
             "rate_session" => {
                 self.session_id.is_some()
                     && self.clip_id.is_none()
@@ -187,6 +283,12 @@ pub struct TransactionRequest {
     expected_total_units: Option<String>,
 }
 impl Crypto {
+    pub async fn selected_wallet(&self) -> Option<String> {
+        self.journal.lock().await.wallet.clone()
+    }
+    pub fn peer_commitment(&self, peer: &str) -> String {
+        peer_commitment(peer)
+    }
     pub fn open(root: &Path) -> Result<Self> {
         let chain_id = std::env::var("CLIPCLUB_MEGAETH_CHAIN_ID")
             .unwrap_or_else(|_| "4326".into())
@@ -329,7 +431,26 @@ impl Crypto {
     pub async fn session_snapshot(&self) -> Option<RatingSession> {
         self.journal.lock().await.rating_session.clone()
     }
+    #[cfg(test)]
     pub async fn queue_rating(&self, clip: &str, score: u8) -> Result<RatingSession> {
+        self.queue_rating_inner(clip, score, None).await
+    }
+    pub async fn queue_seeder_rating(
+        &self,
+        clip: &str,
+        score: u8,
+        distribution: SeederDistribution,
+    ) -> Result<RatingSession> {
+        distribution.validate(score)?;
+        self.queue_rating_inner(clip, score, Some(distribution))
+            .await
+    }
+    async fn queue_rating_inner(
+        &self,
+        clip: &str,
+        score: u8,
+        distribution: Option<SeederDistribution>,
+    ) -> Result<RatingSession> {
         let _guard = self.operation.lock().await;
         self.contract()?;
         ensure!((1..=9).contains(&score), "Choose a rating from 1 to 9");
@@ -351,14 +472,22 @@ impl Crypto {
             "The rating session is frozen for signing or confirmation"
         );
         self.check_chain().await?;
-        let recipient = self.call("clipBeneficiary(bytes32)", &clip).await?;
-        ensure!(recipient.len() == 64, "Invalid clip beneficiary response");
-        let recipient =
-            word_address(&recipient).context("This clip needs a registered payment recipient")?;
-        ensure!(
-            &recipient != wallet,
-            "You cannot pay a rating to your own wallet"
-        );
+        if distribution.is_none() {
+            let recipient = self.call("clipBeneficiary(bytes32)", &clip).await?;
+            ensure!(recipient.len() == 64, "Invalid clip beneficiary response");
+            let recipient = word_address(&recipient)
+                .context("This clip needs a registered payment recipient")?;
+            ensure!(
+                &recipient != wallet,
+                "You cannot pay a rating to your own wallet"
+            );
+        }
+        if let Some(distribution) = &distribution {
+            ensure!(
+                distribution.recipients.iter().all(|r| &r.wallet != wallet),
+                "You cannot pay your own wallet"
+            );
+        }
         let balance = self
             .call("balanceOf(address)", &address_word(wallet)?)
             .await?;
@@ -382,6 +511,7 @@ impl Crypto {
         session.ratings.push(SessionRating {
             clip_id: clip,
             score,
+            distribution,
         });
         let total = session
             .ratings
@@ -443,6 +573,8 @@ impl Crypto {
     }
     fn save(&self, journal: &Journal) -> Result<()> {
         use std::io::Write;
+        let bytes = serde_json::to_vec_pretty(journal)?;
+        ensure!(bytes.len() < 1_000_000, "MegaETH journal is too large");
         let temp = self.path.with_extension("json.tmp");
         let mut options = std::fs::OpenOptions::new();
         options.create(true).truncate(true).write(true);
@@ -452,7 +584,7 @@ impl Crypto {
             options.mode(0o600);
         }
         let mut file = options.open(&temp)?;
-        file.write_all(&serde_json::to_vec_pretty(journal)?)?;
+        file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
         #[cfg(windows)]
@@ -488,7 +620,7 @@ impl Crypto {
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             ensure!(
-                bytes.len() + chunk.len() <= 1_000_000,
+                bytes.len() + chunk.len() <= MAX_RPC_RESPONSE_BYTES,
                 "Network response exceeds its size limit"
             );
             bytes.extend_from_slice(&chunk);
@@ -546,6 +678,7 @@ impl Crypto {
     }
     /// Small bounded batches for the local library; JSON-RPC responses may be
     /// returned in any order, so associate each result by its request ID.
+    #[cfg(test)]
     pub async fn beneficiaries(&self, clips: &[String]) -> Result<BTreeMap<String, String>> {
         ensure!(clips.len() <= 100, "At most 100 local clips may be queried");
         let mut registered = BTreeMap::new();
@@ -589,6 +722,62 @@ impl Crypto {
         }
         Ok(registered)
     }
+    /// Match wallet registrations against authenticated peer announcements.
+    /// Multiple identities advertising one wallet receive at most one payout.
+    pub async fn eligible_seeders(
+        &self,
+        candidates: Vec<SeederRecipient>,
+    ) -> Result<Vec<SeederRecipient>> {
+        ensure!(candidates.len() <= 2048, "Too many observed seeders");
+        let mut eligible = BTreeMap::new();
+        for chunk in candidates.chunks(20) {
+            let calls = chunk.iter().enumerate().map(|(id, r)| Ok(json!({"jsonrpc":"2.0","id":id,"method":"eth_call","params":[{"to":self.contract()?,"data":format!("{}{}",selector("seederPeer(address)")?,address_word(&r.wallet)? )},"latest"]}))).collect::<Result<Vec<_>>>()?;
+            let response = Self::bounded_json(
+                self.client
+                    .post(&self.rpc)
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_vec(&calls)?)
+                    .send()
+                    .await?,
+            )
+            .await?;
+            let results = response
+                .as_array()
+                .context("Malformed seeder registration response")?;
+            ensure!(
+                results.len() == chunk.len(),
+                "Incomplete seeder registration response"
+            );
+            let mut seen = std::collections::BTreeSet::new();
+            for result in results {
+                let id = result["id"]
+                    .as_u64()
+                    .context("Missing seeder response ID")? as usize;
+                ensure!(
+                    id < chunk.len() && seen.insert(id) && result.get("error").is_none(),
+                    "Invalid seeder registration response"
+                );
+                let commitment = bytes32(
+                    result["result"]
+                        .as_str()
+                        .context("Missing seeder registration")?,
+                )?;
+                let recipient = &chunk[id];
+                ensure!(
+                    recipient.peer.parse::<libp2p::PeerId>().is_ok(),
+                    "Invalid seeder peer"
+                );
+                if commitment == peer_commitment(&recipient.peer) {
+                    let wallet = address(&recipient.wallet)?;
+                    eligible.entry(wallet.clone()).or_insert(SeederRecipient {
+                        peer: recipient.peer.clone(),
+                        wallet,
+                    });
+                }
+            }
+        }
+        Ok(eligible.into_values().collect())
+    }
     pub async fn state(&self) -> Value {
         // Never hold cache while acquiring operation or journal: mutations
         // acquire those locks before invalidating cache.
@@ -605,17 +794,27 @@ impl Crypto {
                 journal.rating_session.clone(),
             )
         };
-        let mut state = json!({"name":"좋아","symbol":"✨","decimals":6,"chain_id":self.chain_id,"chain_hex":format!("0x{:x}",self.chain_id),"chain_name":if self.chain_id==4326 {"MegaETH"} else {"MegaETH Testnet"},"rpc_url":self.public_rpc,"explorer_url":self.explorer,"contract":self.contract,"configured":self.contract.is_some(),"wallet":wallet,"balance_units":"0","total_supply_units":"0","error":null});
+        let mut state = json!({"name":"좋아","symbol":"✨","decimals":6,"chain_id":self.chain_id,"chain_hex":format!("0x{:x}",self.chain_id),"chain_name":if self.chain_id==4326 {"MegaETH"} else {"MegaETH Testnet"},"rpc_url":self.public_rpc,"explorer_url":self.explorer,"contract":self.contract,"configured":self.contract.is_some(),"wallet":wallet,"balance_units":"0","total_supply_units":"0","rating_credit_units":"0","total_rating_minted_units":"0","error":null});
         state["pending_transaction"] =
             serde_json::to_value(&pending_transaction).unwrap_or(Value::Null);
         state["rating_session"] = serde_json::to_value(&rating_session).unwrap_or(Value::Null);
+        if let Some(session) = &rating_session {
+            let payout = session.payout_units().unwrap_or(0);
+            state["rating_session"]["payout_units"] = json!(payout.to_string());
+            state["rating_session"]["mint_required_units"] = json!(
+                payout
+                    .saturating_sub(session.total_units.parse().unwrap_or(0))
+                    .to_string()
+            );
+        }
         if self.contract.is_some() {
             let result = async {
                 self.check_chain().await?;
-                let (decimals, supply, verifier) = tokio::try_join!(
+                let (decimals, supply, verifier, rating_minted) = tokio::try_join!(
                     self.call("decimals()", ""),
                     self.call("totalSupply()", ""),
-                    self.call("verifier()", "")
+                    self.call("verifier()", ""),
+                    self.call("totalRatingMinted()", "")
                 )?;
                 ensure!(
                     decimal_word(&decimals[..64])? == "6",
@@ -631,11 +830,30 @@ impl Crypto {
                     "Configured token uses a different randomness verifier"
                 );
                 state["total_supply_units"] = decimal_word(&supply[..64])?.into();
+                state["total_rating_minted_units"] = decimal_word(&rating_minted)?.into();
                 if let Some(wallet) = wallet.as_ref() {
                     let balance = self
                         .call("balanceOf(address)", &address_word(&wallet)?)
                         .await?;
                     state["balance_units"] = decimal_word(&balance[..64])?.into();
+                    let wallet_arg = address_word(wallet)?;
+                    let (credit, seeder) = tokio::try_join!(
+                        self.call("ratingCredit(address)", &wallet_arg),
+                        self.call("seederPeer(address)", &wallet_arg)
+                    )?;
+                    let credit = decimal_word(&credit)?;
+                    state["rating_credit_units"] = credit.clone().into();
+                    if let Some(session) = &rating_session {
+                        state["rating_session"]["mint_required_units"] = json!(
+                            rating_mint_units(
+                                session.payout_units()?,
+                                session.total_units.parse()?,
+                                &credit
+                            )?
+                            .to_string()
+                        );
+                    }
+                    state["seeder_peer_commitment"] = seeder.into();
                     self.refresh_roll(&wallet).await?;
                 }
                 Ok::<_, anyhow::Error>(())
@@ -749,6 +967,11 @@ impl Crypto {
             "Finish or unlock the prepared rating session first"
         );
         let data = match input.action.as_str() {
+            "register_seeder" => format!(
+                "{}{}",
+                selector("registerSeeder(bytes32)")?,
+                peer_commitment(profile_id)
+            ),
             "rate_session" => {
                 ensure!(
                     input.wager_units.is_none()
@@ -1137,6 +1360,8 @@ impl Crypto {
         for (event, rating) in ratings.into_iter().zip(&session.ratings) {
             verify_rating_event(event, &rating.clip_id, rating.score, wallet, profile_id)?;
         }
+        self.verify_distributions(&receipt, &session)?;
+        self.verify_seeder_funding(&receipt, &session, wallet)?;
         let payment = ChainPayment {
             chain_id: self.chain_id,
             contract: self.contract()?.into(),
@@ -1164,6 +1389,174 @@ impl Crypto {
             *self.cache.lock().await = None;
         }
         Ok((session, payment))
+    }
+    fn verify_seeder_funding(
+        &self,
+        receipt: &Value,
+        session: &RatingSession,
+        wallet: &str,
+    ) -> Result<()> {
+        let events = self.events(
+            receipt,
+            "SeederFunding(bytes32,address,uint256,uint256,uint256,uint256)",
+        )?;
+        if session.ratings[0].distribution.is_none() {
+            ensure!(
+                events.is_empty(),
+                "Unexpected funding event for a legacy session"
+            );
+            return Ok(());
+        }
+        ensure!(
+            events.len() == 1,
+            "Missing or repeated seeder funding event"
+        );
+        let event = events[0];
+        let topics = event["topics"]
+            .as_array()
+            .context("Missing seeder funding topics")?;
+        ensure!(
+            topics.len() == 3
+                && bytes32(topics[1].as_str().context("Missing funding session ID")?)?
+                    == session.id
+                && bytes32(topics[2].as_str().context("Missing funding wallet")?)?
+                    == address_word(wallet)?,
+            "Seeder funding belongs to another session or wallet"
+        );
+        let data = event["data"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("0x"))
+            .context("Missing funding event data")?;
+        ensure!(
+            data.len() == 256 && data.bytes().all(|b| b.is_ascii_hexdigit()),
+            "Malformed funding event data"
+        );
+        let payout = session.payout_units()?;
+        let credit_before = decimal_word(&data[128..192])?;
+        let minted = rating_mint_units(payout, session.total_units.parse()?, &credit_before)?;
+        let credit_after = subtract_amount_words(
+            &add_amount_words(&credit_before, &session.total_units)?,
+            &word_decimal(&(payout - minted).to_string())?,
+        )?;
+        ensure!(
+            data[..64].eq_ignore_ascii_case(&word_decimal(&payout.to_string())?)
+                && data[64..128].eq_ignore_ascii_case(&word_decimal(&minted.to_string())?)
+                && data[192..].eq_ignore_ascii_case(&credit_after),
+            "Seeder funding or mint amount mismatch"
+        );
+        Ok(())
+    }
+
+    fn verify_distributions(&self, receipt: &Value, session: &RatingSession) -> Result<()> {
+        let distributions = self.events(
+            receipt,
+            "SeederDistribution(bytes32,bytes32,uint256,uint256,uint256)",
+        )?;
+        let payments = self.events(
+            receipt,
+            "SeederPaid(bytes32,bytes32,address,bytes32,uint256)",
+        )?;
+        let expected: Vec<_> = session
+            .ratings
+            .iter()
+            .filter_map(|r| r.distribution.as_ref().map(|d| (r, d)))
+            .collect();
+        ensure!(
+            distributions.len() == expected.len()
+                && payments.len()
+                    == expected
+                        .iter()
+                        .map(|(_, d)| d.recipients.len())
+                        .sum::<usize>(),
+            "Unexpected or missing seeder payout events"
+        );
+        let mut payments = payments.into_iter();
+        for (event, (rating, d)) in distributions.into_iter().zip(expected) {
+            let topics = event["topics"]
+                .as_array()
+                .context("Missing distribution topics")?;
+            let expected_data = format!(
+                "0x{}{}{}",
+                word_decimal(&d.population.to_string())?,
+                word_decimal(&d.reward_units)?,
+                word_decimal(&d.recipients.len().to_string())?
+            );
+            ensure!(
+                topics.len() == 3
+                    && topics[1]
+                        .as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&format!("0x{}", session.id)))
+                    && topics[2]
+                        .as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&format!("0x{}", rating.clip_id)))
+                    && event["data"]
+                        .as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&expected_data)),
+                "Seeder distribution changed from the reviewed session"
+            );
+            for recipient in &d.recipients {
+                let payment = payments.next().context("Missing seeder payment")?;
+                let topics = payment["topics"]
+                    .as_array()
+                    .context("Missing seeder payment topics")?;
+                let data = format!(
+                    "0x{}{}",
+                    peer_commitment(&recipient.peer),
+                    word_decimal(&d.reward_units)?
+                );
+                ensure!(
+                    topics.len() == 4
+                        && topics[1]
+                            .as_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(&format!("0x{}", session.id)))
+                        && topics[2].as_str().is_some_and(
+                            |s| s.eq_ignore_ascii_case(&format!("0x{}", rating.clip_id))
+                        )
+                        && topics[3]
+                            .as_str()
+                            .is_some_and(|s| address_word(&recipient.wallet)
+                                .is_ok_and(|w| s.eq_ignore_ascii_case(&format!("0x{w}"))))
+                        && payment["data"]
+                            .as_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(&data)),
+                    "Seeder recipient or amount changed from the reviewed session"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn confirm_account_action(
+        &self,
+        hash: &str,
+        action: &str,
+        profile_id: &str,
+    ) -> Result<()> {
+        let _guard = self.operation.lock().await;
+        ensure!(action == "register_seeder", "Unknown account action");
+        let receipt = self.receipt(hash).await?;
+        let wallet = self.wallet().await?;
+        let events = self.events(&receipt, "SeederRegistered(address,bytes32)")?;
+        ensure!(
+            events.len() == 1,
+            "Missing or repeated seeder registration event"
+        );
+        let topics = events[0]["topics"]
+            .as_array()
+            .context("Malformed seeder registration topics")?;
+        ensure!(
+            topics.len() == 3
+                && bytes32(topics[1].as_str().context("Missing seeder wallet")?)?
+                    == address_word(&wallet)?,
+            "Seeder registration belongs to another wallet"
+        );
+        ensure!(
+            bytes32(topics[2].as_str().context("Missing seeder identity")?)?
+                == peer_commitment(profile_id),
+            "Seeder registration belongs to another peer"
+        );
+        *self.cache.lock().await = None;
+        Ok(())
     }
     pub async fn complete_rating_session(&self, id: &str, hash: &str) -> Result<()> {
         let _guard = self.operation.lock().await;
@@ -1285,6 +1678,60 @@ fn verify_rating_event(
 }
 fn session_data(session: &RatingSession, peer: &str) -> Result<String> {
     session.validate()?;
+    if session.ratings[0].distribution.is_some() {
+        // ABI: a dynamic array of dynamic tuples. Tuple offsets are relative
+        // to the array payload after its length; nested arrays to each tuple.
+        let mut tuples = Vec::new();
+        for rating in &session.ratings {
+            let d = rating
+                .distribution
+                .as_ref()
+                .context("Missing distribution")?;
+            let count = d.recipients.len();
+            let wallets = d
+                .recipients
+                .iter()
+                .map(|r| address_word(&r.wallet))
+                .collect::<Result<Vec<_>>>()?
+                .concat();
+            let peers = d
+                .recipients
+                .iter()
+                .map(|r| peer_commitment(&r.peer))
+                .collect::<String>();
+            tuples.push(format!(
+                "{}{}{}{}{}{}{}{}{}{}",
+                rating.clip_id,
+                word_decimal(&rating.score.to_string())?,
+                word_decimal(&d.population.to_string())?,
+                word_decimal(&d.reward_units)?,
+                word_decimal("192")?,
+                word_decimal(&(192 + 32 + count * 32).to_string())?,
+                word_decimal(&count.to_string())?,
+                wallets,
+                word_decimal(&count.to_string())?,
+                peers
+            ));
+        }
+        let mut offset = tuples.len() * 32;
+        let mut offsets = String::new();
+        for tuple in &tuples {
+            offsets.push_str(&word_decimal(&offset.to_string())?);
+            offset += tuple.len() / 2;
+        }
+        return Ok(format!(
+            "{}{}{}{}{}{}{}",
+            selector(
+                "settleSeederRatings(bytes32,(bytes32,uint8,uint256,uint256,address[],bytes32[])[],bytes32)"
+            )?,
+            session.id,
+            word_decimal("96")?,
+            peer_commitment(peer),
+            word_decimal(&tuples.len().to_string())?,
+            offsets,
+            tuples.concat()
+        ));
+    }
     let count = session.ratings.len();
     let clips = format!(
         "{}{}",
@@ -1330,7 +1777,7 @@ fn load_journal(path: &Path) -> Result<Journal> {
         return Ok(Journal::default());
     }
     ensure!(
-        std::fs::metadata(path)?.len() < 64_000,
+        std::fs::metadata(path)?.len() < 1_000_000,
         "MegaETH journal is too large"
     );
     let mut journal: Journal = serde_json::from_slice(&std::fs::read(path)?)
@@ -1523,6 +1970,38 @@ fn word_decimal(s: &str) -> Result<String> {
     }
     Ok(hex::encode(bytes))
 }
+fn add_amount_words(a: &str, b: &str) -> Result<String> {
+    let mut a = hex::decode(word_decimal(a)?)?;
+    let b = hex::decode(word_decimal(b)?)?;
+    let mut carry = 0u16;
+    for (a, b) in a.iter_mut().rev().zip(b.iter().rev()) {
+        let sum = u16::from(*a) + u16::from(*b) + carry;
+        *a = sum as u8;
+        carry = sum >> 8;
+    }
+    ensure!(carry == 0, "Token amount exceeds uint256");
+    Ok(hex::encode(a))
+}
+fn subtract_amount_words(a: &str, b: &str) -> Result<String> {
+    ensure!(a.len() == 64 && b.len() == 64, "Invalid amount word");
+    let mut a = hex::decode(a)?;
+    let b = hex::decode(b)?;
+    let mut borrow = 0i16;
+    for (a, b) in a.iter_mut().rev().zip(b.iter().rev()) {
+        let difference = i16::from(*a) - i16::from(*b) - borrow;
+        *a = difference.rem_euclid(256) as u8;
+        borrow = i16::from(difference < 0);
+    }
+    ensure!(borrow == 0, "Insufficient rating credit");
+    Ok(hex::encode(a))
+}
+fn rating_mint_units(payout: u64, charge: u64, credit: &str) -> Result<u64> {
+    let shortfall = payout.saturating_sub(charge);
+    if word_decimal(credit)? >= word_decimal(&shortfall.to_string())? {
+        return Ok(0);
+    }
+    Ok(shortfall - credit.parse::<u64>()?)
+}
 fn decimal_word(s: &str) -> Result<String> {
     ensure!(s.len() == 64, "Invalid ABI word length");
     let bytes = hex::decode(s)?;
@@ -1581,6 +2060,8 @@ mod tests {
         beneficiaries: BTreeMap<String, String>,
         balance: String,
         estimate_error: bool,
+        rating_credit: String,
+        seeder_peers: BTreeMap<String, String>,
     }
     #[derive(Clone)]
     struct RpcState {
@@ -1630,6 +2111,13 @@ mod tests {
                         .get(&data[10..])
                         .map(|address| address_word(address).unwrap())
                         .unwrap_or_else(|| word_decimal("0").unwrap())
+                } else if signature == selector("ratingCredit(address)").unwrap() {
+                    word_decimal(&f.rating_credit).unwrap()
+                } else if signature == selector("seederPeer(address)").unwrap() {
+                    f.seeder_peers
+                        .get(&data[10..])
+                        .cloned()
+                        .unwrap_or_else(|| "0".repeat(64))
                 } else {
                     word_decimal("1000000000").unwrap()
                 };
@@ -1706,6 +2194,8 @@ mod tests {
                 beneficiaries: BTreeMap::from([(CLIP.into(), WALLET.into())]),
                 balance: "100000000".into(),
                 estimate_error: false,
+                rating_credit: "0".into(),
+                seeder_peers: BTreeMap::new(),
             })),
             requests: Arc::new(StdMutex::new(vec![])),
             balance_read: Arc::new(tokio::sync::Notify::new()),
@@ -1781,6 +2271,21 @@ mod tests {
     }
     fn session_receipt(session: &RatingSession) -> Value {
         let mut logs=session.ratings.iter().map(|rating|json!({"address":CONTRACT,"topics":[event_topic("ClipRated(bytes32,address,uint8,uint256,bytes32)").unwrap(),format!("0x{}",rating.clip_id),format!("0x{}",address_word(WALLET).unwrap())],"data":format!("0x{}{}{}",word_decimal(&rating.score.to_string()).unwrap(),word_decimal(&(u64::from(rating.score)*1_000_000).to_string()).unwrap(),peer_commitment(PEER))})).collect::<Vec<_>>();
+        for rating in &session.ratings {
+            if let Some(d) = &rating.distribution {
+                logs.push(json!({"address":CONTRACT,"topics":[event_topic("SeederDistribution(bytes32,bytes32,uint256,uint256,uint256)").unwrap(),format!("0x{}",session.id),format!("0x{}",rating.clip_id)],"data":format!("0x{}{}{}",word_decimal(&d.population.to_string()).unwrap(),word_decimal(&d.reward_units).unwrap(),word_decimal(&d.recipients.len().to_string()).unwrap())}));
+                for r in &d.recipients {
+                    logs.push(json!({"address":CONTRACT,"topics":[event_topic("SeederPaid(bytes32,bytes32,address,bytes32,uint256)").unwrap(),format!("0x{}",session.id),format!("0x{}",rating.clip_id),format!("0x{}",address_word(&r.wallet).unwrap())],"data":format!("0x{}{}",peer_commitment(&r.peer),word_decimal(&d.reward_units).unwrap())}));
+                }
+            }
+        }
+        if session.ratings[0].distribution.is_some() {
+            let payout = session.payout_units().unwrap();
+            let charge = session.total_units.parse::<u64>().unwrap();
+            let minted = payout.saturating_sub(charge);
+            let credit_after = charge.saturating_sub(payout);
+            logs.push(json!({"address":CONTRACT,"topics":[event_topic("SeederFunding(bytes32,address,uint256,uint256,uint256,uint256)").unwrap(),format!("0x{}",session.id),format!("0x{}",address_word(WALLET).unwrap())],"data":format!("0x{}{}{}{}",word_decimal(&payout.to_string()).unwrap(),word_decimal(&minted.to_string()).unwrap(),word_decimal("0").unwrap(),word_decimal(&credit_after.to_string()).unwrap())}));
+        }
         logs.push(json!({"address":CONTRACT,"topics":[event_topic("RatingsSettled(bytes32,address,uint256,uint256,bytes32)").unwrap(),format!("0x{}",session.id),format!("0x{}",address_word(WALLET).unwrap())],"data":format!("0x{}{}{}",word_decimal(&session.ratings.len().to_string()).unwrap(),word_decimal(&session.total_units).unwrap(),peer_commitment(PEER))}));
         let mut result = receipt(Value::Null);
         result["logs"] = Value::Array(logs);
@@ -1791,6 +2296,236 @@ mod tests {
             BTreeMap::from([(CLIP.into(), OTHER.into()), ("b".repeat(64), OTHER.into())]);
         m.crypto.queue_rating(CLIP, 5).await.unwrap();
         m.crypto.queue_rating(&"b".repeat(64), 7).await.unwrap()
+    }
+
+    fn test_seeder(wallet: &str) -> SeederRecipient {
+        SeederRecipient {
+            peer: libp2p::identity::Keypair::generate_ed25519()
+                .public()
+                .to_peer_id()
+                .to_string(),
+            wallet: wallet.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn seeder_rewards_queue_without_prefunding_and_confirmation_rejects_changed_payouts() {
+        let m = mock().await;
+        let recipients = vec![
+            test_seeder("0x1111111111111111111111111111111111111111"),
+            test_seeder(OTHER),
+        ];
+        let d = SeederDistribution::new(5, 100, recipients).unwrap();
+        assert!(d.payout_units().unwrap() > 5_000_000);
+        let draft = m
+            .crypto
+            .queue_seeder_rating(CLIP, 5, d.clone())
+            .await
+            .unwrap();
+        assert_eq!(draft.total_units, "5000000");
+        assert_eq!(
+            load_journal(&m.crypto.path).unwrap().rating_session,
+            Some(draft.clone())
+        );
+        let tx = m
+            .crypto
+            .transaction(checkout_request(&draft), PEER)
+            .await
+            .unwrap();
+        assert!(tx["data"].as_str().unwrap().starts_with(&selector("settleSeederRatings(bytes32,(bytes32,uint8,uint256,uint256,address[],bytes32[])[],bytes32)").unwrap()));
+        let valid = session_receipt(&draft);
+        for mutation in 0..4 {
+            let mut bad = valid.clone();
+            match mutation {
+                0 => {
+                    bad["logs"][2]["topics"][3] =
+                        format!("0x{}", address_word(WALLET).unwrap()).into()
+                }
+                1 => {
+                    bad["logs"][2]["data"] = format!(
+                        "0x{}{}",
+                        peer_commitment(&d.recipients[0].peer),
+                        word_decimal("1").unwrap()
+                    )
+                    .into()
+                }
+                2 => {
+                    bad["logs"].as_array_mut().unwrap().remove(2);
+                }
+                _ => {
+                    let extra = bad["logs"][2].clone();
+                    bad["logs"].as_array_mut().unwrap().insert(2, extra);
+                }
+            }
+            m.state.fixture.lock().unwrap().receipt = bad;
+            assert!(m.crypto.session_payment(HASH, PEER).await.is_err());
+            assert_eq!(
+                m.crypto.session_snapshot().await.unwrap().status,
+                "prepared"
+            );
+        }
+        m.state.fixture.lock().unwrap().receipt = valid;
+        let (confirmed, _) = m.crypto.session_payment(HASH, PEER).await.unwrap();
+        assert_eq!(confirmed.ratings, draft.ratings);
+        assert_eq!(confirmed.status, "submitted");
+    }
+
+    #[tokio::test]
+    async fn seeder_registrations_match_the_announcing_peer_and_deduplicate_wallets() {
+        let m = mock().await;
+        let a = test_seeder(OTHER);
+        let impostor = test_seeder(OTHER);
+        let b = test_seeder("0x1111111111111111111111111111111111111111");
+        m.state.fixture.lock().unwrap().seeder_peers = BTreeMap::from([
+            (address_word(OTHER).unwrap(), peer_commitment(&a.peer)),
+            (address_word(&b.wallet).unwrap(), peer_commitment(&b.peer)),
+        ]);
+        let eligible = m
+            .crypto
+            .eligible_seeders(vec![a.clone(), impostor, b.clone(), a.clone()])
+            .await
+            .unwrap();
+        assert_eq!(eligible, vec![b, a]);
+    }
+
+    #[tokio::test]
+    async fn mint_forecast_uses_credit_and_confirmation_rejects_forged_funding() {
+        let m = mock().await;
+        let recipients = (1..=5)
+            .map(|n| test_seeder(&format!("0x{n:040x}")))
+            .collect();
+        let distribution = SeederDistribution::new(5, 100, recipients).unwrap();
+        assert_eq!(distribution.payout_units().unwrap(), 12_851_655);
+        let draft = m
+            .crypto
+            .queue_seeder_rating(CLIP, 5, distribution)
+            .await
+            .unwrap();
+        m.state.fixture.lock().unwrap().rating_credit = "1000000".into();
+        let state = m.crypto.state().await;
+        assert_eq!(state["rating_session"]["mint_required_units"], "6851655");
+        assert_eq!(state["rating_session"]["total_units"], "5000000");
+        m.crypto
+            .transaction(checkout_request(&draft), PEER)
+            .await
+            .unwrap();
+        let mut valid = session_receipt(&draft);
+        let index = valid["logs"].as_array().unwrap().len() - 2;
+        valid["logs"][index]["data"] = format!(
+            "0x{}{}{}{}",
+            word_decimal("12851655").unwrap(),
+            word_decimal("6851655").unwrap(),
+            word_decimal("1000000").unwrap(),
+            word_decimal("0").unwrap()
+        )
+        .into();
+        for mutation in 0..6 {
+            let mut bad = valid.clone();
+            match mutation {
+                0 => {
+                    bad["logs"].as_array_mut().unwrap().remove(index);
+                }
+                1 => {
+                    let extra = bad["logs"][index].clone();
+                    bad["logs"].as_array_mut().unwrap().insert(index, extra);
+                }
+                2 => bad["logs"][index]["topics"][1] = format!("0x{}", "f".repeat(64)).into(),
+                3 => {
+                    bad["logs"][index]["topics"][2] =
+                        format!("0x{}", address_word(OTHER).unwrap()).into()
+                }
+                4 => {
+                    bad["logs"][index]["data"] = format!(
+                        "0x{}{}{}{}",
+                        word_decimal("12851655").unwrap(),
+                        word_decimal("7851655").unwrap(),
+                        word_decimal("1000000").unwrap(),
+                        word_decimal("0").unwrap()
+                    )
+                    .into()
+                }
+                _ => {
+                    bad["logs"][index]["data"] = format!(
+                        "0x{}{}{}{}",
+                        word_decimal("12851655").unwrap(),
+                        word_decimal("6851655").unwrap(),
+                        word_decimal("1000000").unwrap(),
+                        word_decimal("1").unwrap()
+                    )
+                    .into()
+                }
+            }
+            m.state.fixture.lock().unwrap().receipt = bad;
+            assert!(m.crypto.session_payment(HASH, PEER).await.is_err());
+            assert_eq!(
+                m.crypto.session_snapshot().await.unwrap().status,
+                "prepared"
+            );
+        }
+        m.state.fixture.lock().unwrap().receipt = valid;
+        assert!(m.crypto.session_payment(HASH, PEER).await.is_ok());
+    }
+
+    #[test]
+    fn mint_and_credit_arithmetic_preserves_full_uint256_credit_values() {
+        let large = "18446744073709551616";
+        assert_eq!(
+            rating_mint_units(12_851_655, 5_000_000, "0").unwrap(),
+            7_851_655
+        );
+        assert_eq!(
+            rating_mint_units(12_851_655, 5_000_000, "7851655").unwrap(),
+            0
+        );
+        assert_eq!(rating_mint_units(12_851_655, 5_000_000, large).unwrap(), 0);
+        let after = subtract_amount_words(
+            &add_amount_words(large, "5000000").unwrap(),
+            &word_decimal("12851655").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decimal_word(&after).unwrap(), "18446744073701699961");
+        assert!(
+            subtract_amount_words(&word_decimal("0").unwrap(), &word_decimal("1").unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn distribution_rejects_repeated_wallets_peers_and_tampered_curve_amounts() {
+        let a = test_seeder(OTHER);
+        assert!(SeederDistribution::new(5, 100, vec![a.clone(), a.clone()]).is_err());
+        let mut d = SeederDistribution::new(5, 100, vec![a]).unwrap();
+        d.reward_units = "1".into();
+        assert!(d.validate(5).is_err());
+        assert!(SeederDistribution::new(5, 100, vec![]).is_err());
+    }
+
+    #[tokio::test]
+    async fn seeder_registration_confirmation_binds_the_wallet_and_peer() {
+        let m = mock().await;
+        let registration = receipt(
+            json!({"address":CONTRACT,"topics":[event_topic("SeederRegistered(address,bytes32)").unwrap(),format!("0x{}",address_word(WALLET).unwrap()),format!("0x{}",peer_commitment(PEER))],"data":"0x"}),
+        );
+        m.state.fixture.lock().unwrap().receipt = registration.clone();
+        m.crypto
+            .confirm_account_action(HASH, "register_seeder", PEER)
+            .await
+            .unwrap();
+        assert!(
+            m.crypto
+                .confirm_account_action(HASH, "register_seeder", "another peer")
+                .await
+                .is_err()
+        );
+        let mut wrong = registration;
+        wrong["logs"][0]["topics"][1] = format!("0x{}", address_word(OTHER).unwrap()).into();
+        m.state.fixture.lock().unwrap().receipt = wrong;
+        assert!(
+            m.crypto
+                .confirm_account_action(HASH, "register_seeder", PEER)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

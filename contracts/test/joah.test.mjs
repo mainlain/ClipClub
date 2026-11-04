@@ -14,7 +14,7 @@ const signature = `0x${'00'.repeat(48)}`;
 const peerCommitment = id('ClipClub peer identity');
 
 async function fixture(t, supply = 1_000_000n * UNIT, chainId = 31337) {
-  const transport = ganache.provider({logging: {quiet: true}, chain: {chainId, hardfork: 'shanghai'}, wallet: {totalAccounts: 4}});
+  const transport = ganache.provider({logging: {quiet: true}, chain: {chainId, hardfork: 'shanghai'}, wallet: {totalAccounts: 12}});
   t.after(() => transport.disconnect());
   const provider = new BrowserProvider(transport, undefined, {cacheTimeout: -1, pollingInterval: 10});
   const owner = await provider.getSigner(0), user = await provider.getSigner(1), keeper = await provider.getSigner(2);
@@ -352,4 +352,151 @@ test('exactly 100 session items succeed and session replay protection is scoped 
   assert.equal(await f.joah.settledSession(owner, session), true);
   assert.equal(await f.joah.settledSession(keeper, session), true);
   assert.equal(await f.joah.balanceOf(user), amount + UNIT);
+});
+
+
+async function seeders(f, count = 5) {
+  const result = [];
+  for (let i = 1; i <= count; ++i) {
+    const signer = await f.provider.getSigner(i), wallet = await signer.getAddress();
+    const peer = id(`seeder peer ${wallet}`);
+    await tx(f.joah.connect(signer).registerSeeder(peer));
+    result.push({wallet, peer});
+  }
+  return result.sort((a,b) => a.wallet.toLowerCase().localeCompare(b.wallet.toLowerCase()));
+}
+function seederRating(recipients, {clip = id('distributed clip'), score = 5, population = 100, reward = 2_570_331n} = {}) {
+  return {clipId:clip, score, population, reward, recipients:recipients.map(r=>r.wallet), peers:recipients.map(r=>r.peer)};
+}
+
+
+test('automatic rewards charge the score and mint only the shortfall without prefunding', async t => {
+  const f=await fixture(t), recipients=await seeders(f), owner=await f.owner.getAddress();
+  const session=id('automatically minted seeder session'),rating=seederRating(recipients);
+  const supply=await f.joah.totalSupply(),before=await f.joah.balanceOf(owner);
+  const receipt=await tx(f.joah.settleSeederRatings(session,[rating],peerCommitment));
+  assert.equal(await f.joah.balanceOf(owner),before-5n*UNIT);
+  for(const r of recipients)assert.equal(await f.joah.balanceOf(r.wallet),2_570_331n);
+  assert.equal(await f.joah.ratingCredit(owner),0n);
+  assert.equal(await f.joah.balanceOf(await f.joah.getAddress()),0n);
+  assert.equal(await f.joah.totalSupply(),supply+7_851_655n);
+  assert.equal(await f.joah.totalRatingMinted(),7_851_655n);
+  const funding=logs(f,receipt,'SeederFunding')[0].args;
+  assert.equal(funding.payout,12_851_655n);assert.equal(funding.minted,7_851_655n);
+  assert.equal(funding.creditBefore,0n);assert.equal(funding.creditAfter,0n);
+  assert.equal(logs(f,receipt,'SeederPaid').length,5);
+  assert.equal(logs(f,receipt,'ClipRated')[0].args.amount,5n*UNIT);
+  assert.equal(logs(f,receipt,'RatingsSettled')[0].args.amount,5n*UNIT);
+  const mint=logs(f,receipt,'Transfer').filter(log=>log.args.from===ZeroAddress);
+  assert.equal(mint.length,1);assert.equal(mint[0].args.value,7_851_655n);
+  await minedRevert(f.joah.settleSeederRatings(session,[rating],peerCommitment,{gasLimit:5_000_000}));
+  await minedRevert(f.joah.settleSeederRatings(id('same clip new session'),[rating],peerCommitment,{gasLimit:5_000_000}));
+  assert.equal(await f.joah.totalRatingMinted(),7_851_655n);
+});
+
+test('automatic minting leaves other wallets credits and roll escrow untouched',async t=>{
+  const f=await fixture(t),recipients=await seeders(f,2),owner=await f.owner.getAddress();
+  const other=await f.provider.getSigner(6),otherAddress=await other.getAddress();
+  await tx(f.joah.transfer(otherAddress,UNIT));
+  const low=seederRating(recipients,{clip:id('other wallet surplus'),score:1,population:21,reward:28_996n});
+  await tx(f.joah.connect(other).settleSeederRatings(id('other wallet session'),[low],id('other rater peer')));
+  await tx(f.joah.requestRoll(2n*UNIT));
+  const high=seederRating(recipients,{clip:id('mint alongside roll'),score:1,reward:900_000n});
+  await tx(f.joah.settleSeederRatings(id('escrow isolated mint'),[high],peerCommitment));
+  assert.equal(await f.joah.ratingCredit(otherAddress),942_008n);
+  assert.equal(await f.joah.ratingCredit(owner),0n);
+  assert.equal(await f.joah.totalRatingMinted(),800_000n);
+  assert.equal(await f.joah.balanceOf(await f.joah.getAddress()),2n*UNIT+942_008n);
+  assert.equal((await f.joah.rolls(1)).settled,false);
+});
+
+test('surplus credit is used before minting and each rating still costs its full score',async t=>{
+  const f=await fixture(t),recipients=await seeders(f,2),owner=await f.owner.getAddress();
+  const before=await f.joah.balanceOf(owner),supply=await f.joah.totalSupply();
+  const low=seederRating(recipients,{clip:id('surplus credit clip'),score:1,population:21,reward:28_996n});
+  await tx(f.joah.settleSeederRatings(id('surplus credit session'),[low],peerCommitment));
+  assert.equal(await f.joah.ratingCredit(owner),942_008n);
+  assert.equal(await f.joah.totalRatingMinted(),0n);
+  const high=seederRating(recipients,{clip:id('credit funded clip'),score:1,reward:900_000n});
+  const paid=await tx(f.joah.settleSeederRatings(id('credit funded session'),[high],peerCommitment));
+  assert.equal(await f.joah.ratingCredit(owner),142_008n);
+  assert.equal(logs(f,paid,'SeederFunding')[0].args.minted,0n);
+  const next={...high,clipId:id('partially credit funded clip')};
+  const minted=await tx(f.joah.settleSeederRatings(id('partially credit funded session'),[next],peerCommitment));
+  assert.equal(logs(f,minted,'SeederFunding')[0].args.creditBefore,142_008n);
+  assert.equal(logs(f,minted,'SeederFunding')[0].args.minted,657_992n);
+  assert.equal(await f.joah.ratingCredit(owner),0n);
+  assert.equal(await f.joah.totalRatingMinted(),657_992n);
+  assert.equal(await f.joah.totalSupply(),supply+657_992n);
+  assert.equal(await f.joah.balanceOf(owner),before-3n*UNIT);
+});
+
+test('insufficient rater funds revert transfers, minting, and replay markers atomically',async t=>{
+  const f=await fixture(t),recipients=await seeders(f),poor=await f.provider.getSigner(6),wallet=await poor.getAddress();
+  await tx(f.joah.transfer(wallet,4n*UNIT));
+  const rating=seederRating(recipients),session=id('insufficient rating contribution'),supply=await f.joah.totalSupply();
+  await minedRevert(f.joah.connect(poor).settleSeederRatings(session,[rating],id('poor peer'),{gasLimit:5_000_000}));
+  assert.equal(await f.joah.totalRatingMinted(),0n);assert.equal(await f.joah.totalSupply(),supply);
+  assert.equal(await f.joah.balanceOf(wallet),4n*UNIT);
+  assert.equal(await f.joah.hasRated(rating.clipId,wallet),false);
+  assert.equal(await f.joah.settledSession(wallet,session),false);
+});
+
+test('malformed seeder distributions and changed registrations cannot mint or consume a rating',async t=>{
+  const f=await fixture(t),recipients=await seeders(f,2),owner=await f.owner.getAddress();
+  const valid=seederRating(recipients,{reward:UNIT}),zero=zeroPadValue('0x00',32),supply=await f.joah.totalSupply();
+  const cases=[
+    {...valid,score:0},{...valid,population:20},{...valid,reward:0},{...valid,reward:6n*UNIT},
+    {...valid,recipients:[]},{...valid,peers:[]},{...valid,recipients:[recipients[0].wallet,recipients[0].wallet]},
+    {...valid,peers:[zero,recipients[1].peer]},{...valid,peers:[id('wrong peer'),recipients[1].peer]},
+    {...valid,recipients:[owner],peers:[peerCommitment]},
+    {...valid,recipients:[...valid.recipients].reverse(),peers:[...valid.peers].reverse()},
+    {...valid,population:2000,recipients:Array(1001).fill(recipients[0].wallet),peers:Array(1001).fill(recipients[0].peer)},
+  ];
+  for(const [i,rating]of cases.entries()){
+    await minedRevert(f.joah.settleSeederRatings(id(`invalid mint distribution ${i}`),[rating],peerCommitment,{gasLimit:5_000_000}));
+    assert.equal(await f.joah.totalRatingMinted(),0n);assert.equal(await f.joah.totalSupply(),supply);
+    assert.equal(await f.joah.hasRated(valid.clipId,owner),false);
+  }
+  await minedRevert(f.joah.settleSeederRatings(id('duplicate mint clip'),[valid,valid],peerCommitment,{gasLimit:5_000_000}));
+  const signer=await f.provider.getSigner(recipients[0].wallet);
+  await tx(f.joah.connect(signer).registerSeeder(id('changed peer binding')));
+  await minedRevert(f.joah.settleSeederRatings(id('changed registration'),[valid],peerCommitment,{gasLimit:5_000_000}));
+  assert.equal(await f.joah.totalRatingMinted(),0n);assert.equal(await f.joah.totalSupply(),supply);
+  await assert.rejects(f.joah.registerSeeder(zero));
+});
+
+test('rating minting reserves capacity for every already committed roll payout',async t=>{
+  const f=await fixture(t,MaxUint256-100n),recipients=await seeders(f,2),owner=await f.owner.getAddress();
+  await tx(f.joah.requestRoll(10n));
+  const rating=seederRating(recipients,{clip:id('capacity bounded mint'),score:1,reward:500_011n});
+  const session=id('capacity protected session');
+  await minedRevert(f.joah.settleSeederRatings(session,[rating],peerCommitment,{gasLimit:5_000_000}));
+  assert.equal(await f.joah.hasRated(rating.clipId,owner),false);
+  assert.equal(await f.joah.totalRatingMinted(),0n);
+  assert.equal(await f.joah.reservedWinProfit(),80n);
+  await tx(f.joah.settleSeederRatings(session,[{...rating,reward:500_010n}],peerCommitment));
+  assert.equal(await f.joah.totalRatingMinted(),20n);
+  assert.equal(await f.joah.totalSupply(),MaxUint256-80n);
+  const roll=await f.joah.rolls(1);
+  await tx(f.oracle.set(roll.round,await entropyFor(f,1n,9)));
+  await publish(f,roll.round);await tx(f.joah.settleRoll(1,signature));
+  assert.equal(await f.joah.totalSupply(),MaxUint256);
+  assert.equal(await f.joah.reservedWinProfit(),0n);
+  assert.equal(await f.joah.totalWinMinted(),80n);
+});
+
+test('100 clips and exactly 1000 seeder payments settle within the bounded receipt size',async t=>{
+  const f=await fixture(t),recipients=await seeders(f,10),owner=await f.owner.getAddress();
+  const ratings=Array.from({length:100},(_,i)=>seederRating(recipients,{clip:id(`maximum seeder batch ${i}`),score:i%9+1,population:100,reward:BigInt(i%9+1)*10_000n}));
+  const charge=ratings.reduce((sum,r)=>sum+BigInt(r.score)*UNIT,0n),payout=ratings.reduce((sum,r)=>sum+r.reward*10n,0n);
+  const before=await f.joah.balanceOf(owner);
+  const receipt=await tx(f.joah.settleSeederRatings(id('maximum seeder payments'),ratings,peerCommitment));
+  assert.equal(logs(f,receipt,'SeederPaid').length,1000);assert.equal(logs(f,receipt,'SeederDistribution').length,100);
+  assert.equal(logs(f,receipt,'RatingsSettled')[0].args.count,100n);
+  assert.equal(await f.joah.balanceOf(owner),before-charge);
+  assert.equal(await f.joah.ratingCredit(owner),charge-payout);
+  assert.equal(await f.joah.totalRatingMinted(),0n);
+  const raw=await f.provider.send('eth_getTransactionReceipt',[receipt.hash]),bytes=Buffer.byteLength(JSON.stringify(raw));
+  assert.ok(bytes>1_000_000);assert.ok(bytes<4_000_000);
 });

@@ -1,6 +1,6 @@
 # Rating distribution design intent
 
-Updated on 2026-11-03. The selected seeder distribution curve and per-seeder reward are implemented as tested pure helpers in `src/rating_distribution.rs`. The curve output is a percentage of the rating paid to each permanent seeder. Deployment remains on hold pending integration and a seeder funding/recipient rule.
+Updated on 2026-11-03. The selected curve in `src/rating_distribution.rs` is connected to local rating drafts and on-chain seeder settlement. The rater pays exactly the rating score in existing 좋아 tokens. Unused rating contributions carry forward as wallet-scoped credit. Settlement mints any reward shortfall remaining after that credit is used. Deployment remains on hold for final review; no live deployment or funding has been performed.
 
 ## Selected curve
 
@@ -26,6 +26,37 @@ A lone seeder receives exactly the full rating; at `x = N`, each seeder receives
 
 Floating-point rounding and conversion to whole micropoints can produce the minimum payout before `x = N`; the unique minimum at `x = N` is a property of the exact continuous formula.
 
+## Local calculation and on-chain settlement
+
+Calculate the selected curve and each seeder's six-decimal reward locally in the desktop app, using locally observed seeder and population inputs. Keep these calculations off-chain when integrating seeder payments; token transfers should still settle on-chain in rating-session batches. The Rust app calculates and freezes the population, reward and recipients when each rating is queued. Session checkout sends those frozen results in one `settleSeederRatings` transaction.
+
+The contract enforces wallet authorization, registered seeder identities, distinct sorted recipient wallets, reward bounds, balances and replay protection. It does not evaluate the logistic curve or verify actual storage. Up to 100 ratings and 1,000 individual seeder payments can settle atomically in one session.
+
+## Automatic minting and surplus credit
+
+For a session, let **C** be the sum of rating scores in base units, **P** the sum of all seeder payouts, and **B** the rater's unused credit from previous rating contributions:
+
+```text
+minted = max(0, P - C - B)
+new_credit = max(0, B + C - P)
+```
+
+Settlement debits exactly C from the rater, adds any required newly minted tokens, and pays P to the registered seeders atomically. No treasury grant, sponsor deposit or prefunding is required. The rater still needs the full rating cost in their wallet; unused credit funds seeder rewards rather than replacing that contribution.
+
+A rating of 5 with five seeders and N=100 costs the rater 5 ✨ and pays 12.851655 ✨ in total. With no previous credit, settlement mints 7.851655 ✨. With 1 ✨ of credit, settlement consumes that credit and mints 6.851655 ✨. If payouts are below the contribution, the unspent existing tokens remain in the contract as that rater's credit for future rewards. The contract does not spend another wallet's credit or roll escrow.
+
+Minting happens once per session after all distributions are validated. An invalid item, insufficient rater balance or exhausted uint256 capacity reverts contributions, minting, payouts and replay markers together. Capacity checks reserve headroom for the worst-case payouts of every already committed roll. `totalRatingMinted` tracks cumulative issuance, and `SeederFunding` records each session's total payout, minted amount and credit before/after. The app verifies those funding records as well as the exact seeder payments before committing receipts.
+
+The rating formula and peer observations remain local inputs. The contract verifies wallet bindings, array and reward bounds, and replay protection; it does not independently prove actual storage or validate the logistic curve. Automatic rating minting is permissionless within those rules. No mint-role gate, attestation requirement, emissions schedule or policy supply cap is added; arithmetic overflow protection remains enforced. Modified clients can submit distributions that satisfy contract bounds without following the app's observations or formula.
+
+## Recipients
+
+A wallet calls `registerSeeder(SHA256(peer_id))`, then that authenticated peer advertises the wallet and its permanent clip IDs. The app checks the on-chain wallet-to-peer binding before accepting the wallet as a recipient. No first-claim clip registration is needed for the new seeder flow.
+
+For the curve, x is the number of eligible, currently observed permanent seeders with registered recipient wallets, excluding the rater and the rater's wallet. Unregistered wallets, temporary session seeds, expired presence, and duplicate wallets do not qualify. Each peer and recipient wallet appears at most once per clip. Recipient lists and rewards are durable snapshots taken when queueing; a disconnect after queueing does not recalculate a signed payment. A changed on-chain wallet binding can cause settlement to revert and requires rebuilding the draft.
+
+Session review displays each clip's recipients and per-seeder reward separately from the rater's cost. Confirmation verifies the exact distribution and payment events against the frozen local draft before committing signed rating receipts. Existing single-recipient contract methods remain available for legacy drafts and do not mint seeder subsidies.
+
 ## Meaning of N
 
 **N represents an estimate of the total active user base.** The intended approximation is monthly active peer identities observed through the peer network, using a rolling 30-day window:
@@ -42,10 +73,10 @@ N = max(21, 1 + distinct other peer IDs observed active during the last 30 days)
 
 N is a population input. The number of peers permanently seeding a particular clip is the separate input x. The selected curve reaches 1 when x equals N.
 
-## Current implementation and deferred work
+## Population persistence and historical compatibility
 
-The rolling 30-day estimate and its minimum of 21 are **not implemented**. Currently, `src/app.rs` supplies `rt.peers.len() + 1`, and `src/core.rs` applies the legacy minimum of 3. That peer list is held in memory, removes directly disconnected peers immediately, and prunes entries last seen at least 65 seconds ago on a 20-second timer. It therefore measures recent observed presence rather than monthly activity.
+`Store::observe_peer` records a timestamp for each authenticated presence announcement in the profile's persistent `peer_activity` map. The estimate deduplicates peer identities, counts the local peer once, applies the minimum of 21, and excludes observations at least 30 days old. Disconnecting or pruning current connectivity does not erase monthly history. Restarting preserves it; old profiles acquire an empty history through a backwards-compatible default.
 
-A future implementation of the intended estimate needs persistent last-observed activity timestamps per peer identity. Disconnection must not erase monthly activity history, app restarts must preserve it, and an identity must expire from the estimate after 30 days without another observation. Current connectivity and clip availability must remain separate from that history.
+Archived signed points receipts retain their original square-root calculation and signing bytes. They are not recalculated or converted into tokens. Paid rating receipts continue to bind scores to successful canonical contract events and the rater's peer identity.
 
-The helpers do not recalculate archived signed receipts: their square-root points curve must remain available to preserve historical balances and earnings. Active on-chain ratings still transfer the rating amount to the registered clip wallet. Connecting the selected reward calculation to new seeder payments requires funding and recipient integration, plus implementation of the population estimate. Peer retention behavior and the deployment hold remain unchanged.
+The end-to-end session test uses three actual local app processes and a disposable EVM, with persistent monthly history N=100. It checks multiple permanent seeders, exact Rust/Solidity calldata agreement, fixed rater charges, automatic shortfall minting without prefunding, restart recovery, peer receipt propagation and duplicate confirmation without additional payment.

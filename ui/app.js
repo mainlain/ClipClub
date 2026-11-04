@@ -46,14 +46,20 @@ function spendableTokenBalance(){const balance=currentTokenBalance(),reserved=qu
 function ratingWalletSelected(){return !!state?.crypto?.configured&&!state.crypto.error&&/^0x[a-fA-F0-9]{40}$/.test(state.crypto.wallet||'');}
 function walletSelectionLocked(){return queuedRatingCount()>0||!!pendingTransaction;}
 function ratingDraftEditable(){return !ratingSession()||ratingSession().status==='draft';}
+function clipCanReceiveRating(clip){return clip?.distribution_preview?clip.distribution_preview.seeders>0:!!clip?.beneficiary&&clip.beneficiary.toLowerCase()!==state.crypto?.wallet?.toLowerCase();}
+function seederPaymentsFit(){
+  const preview=current?.distribution_preview;if(!preview)return true;
+  const payments=(ratingSession()?.ratings||[]).reduce((sum,r)=>sum+(r.distribution?.recipients?.length||0),0)+preview.seeders;
+  return payments<=1000;
+}
 function renderRatingSession(){
   if(!state)return;
   const session=ratingSession(),count=queuedRatingCount(),submitted=session?.status==='submitted',prepared=session?.status==='prepared';
   $('rating-session-panel').hidden=!count;
   $('rating-session-status').textContent=submitted?'Submitted · awaiting confirmation':prepared?'Prepared · not yet confirmed':'Queued · not paid';
   $('rating-session-summary').textContent=`${count} rating${count===1?'':'s'} · ${fmtTokens(queuedTokenUnits())} ✨ total`;
-  $('rating-session-available').textContent=`${fmtTokens(spendableTokenBalance())} ✨ available after queued ratings. Up to 100 ratings settle together.`;
-  $('rating-session-items').innerHTML=(session?.ratings||[]).map(item=>`<li><span class="session-item-title" title="${esc(item.clip_id)}">${esc(item.title||item.clip_id)}</span><span>${item.score} ✨</span></li>`).join('');
+  $('rating-session-available').textContent=`${fmtTokens(spendableTokenBalance())} ✨ available after queued ratings. Up to 100 ratings settle together.${session?.payout_units?` Seeders receive ${fmtTokens(session.payout_units)} ✨; ${fmtTokens(session.mint_required_units)} ✨ estimated new tokens minted.`:''}`;
+  $('rating-session-items').innerHTML=(session?.ratings||[]).map(item=>`<li><span class="session-item-title" title="${esc(item.clip_id)}">${esc(item.title||item.clip_id)}${item.distribution?`<details><summary>${item.distribution.recipients.length} permanent seeder${item.distribution.recipients.length===1?'':'s'} · ${fmtTokens(item.distribution.reward_units,0)} ✨ each</summary>${item.distribution.recipients.map(r=>`<div><code>${esc(r.wallet)}</code> · ${fmtTokens(item.distribution.reward_units,0)} ✨</div>`).join('')}</details>`:''}</span><span>${item.score} ✨</span></li>`).join('');
   $('settle-rating-session').disabled=busy||walletBusy||rollBusy||transactionBusy||!count||!ratingWalletSelected()||prepared&&!pendingTransaction||!!pendingTransaction&&!['rate_session'].includes(pendingTransaction.action);
   $('settle-rating-session').textContent=submitted||pendingTransaction?.action==='rate_session'?'Retry session confirmation':`Settle session · ${fmtTokens(queuedTokenUnits())} ✨`;
   $('discard-rating-session').disabled=busy||walletBusy||rollBusy||transactionBusy||!count||!ratingDraftEditable()||!!pendingTransaction;
@@ -139,7 +145,7 @@ function restoreTransaction(){
   if(pendingTransaction||!state?.crypto?.wallet)return;
   try{
     const record=state.crypto.pending_transaction||JSON.parse(window.localStorage?.getItem(storageKey())||'null');
-    if(record&&/^0x[a-fA-F0-9]{64}$/.test(record.hash)&&['request_roll','settle_roll','rate_clip','rate_session','register_clip'].includes(record.action))pendingTransaction={...record,chain_id:state.crypto.chain_id,contract:state.crypto.contract,wallet:state.crypto.wallet};
+    if(record&&/^0x[a-fA-F0-9]{64}$/.test(record.hash)&&['request_roll','settle_roll','rate_clip','rate_session','register_clip','register_seeder'].includes(record.action))pendingTransaction={...record,chain_id:state.crypto.chain_id,contract:state.crypto.contract,wallet:state.crypto.wallet};
   }catch{}
 }
 function pendingServerRecord(record){const result={action:record.action,hash:record.hash};for(const key of ['wager_units','roll_id','clip_id','score','session_id'])if(record[key]!==undefined)result[key]=record[key];return result;}
@@ -194,6 +200,10 @@ function renderWallet(){
   $('crypto-network').textContent=crypto?`${crypto.chain_name} · ${crypto.chain_id}`:'MegaETH';
   $('crypto-wallet').textContent=crypto?.wallet||'Disconnected';
   $('crypto-contract').textContent=crypto?.contract||'Not configured';
+  $('seeder-status').textContent=crypto?.seeder_registered?'This wallet receives rewards for your permanent seeds.':'Register this wallet to receive permanent seeder rewards.';
+  $('register-seeder').disabled=!walletAvailable()||walletBusy||transactionBusy||rollBusy||busy||!!pendingTransaction;
+  $('register-seeder').hidden=!!crypto?.seeder_registered;
+  $('rating-credit-status').textContent=`Unused rating credit · ${fmtTokens(crypto?.rating_credit_units||'0')} ✨. You pay only the rating score. Credit funds future seeder rewards; any remaining shortfall is minted automatically.`;
   $('wallet-status').textContent=walletPhase||crypto?.error||(!crypto?.configured?'The 좋아 token has not been deployed and configured for this app.':!crypto.wallet?'Connect your wallet to see your ✨ balance and sign transactions.':!walletAvailable()?'This is the last selected wallet. Connect it in this browser to sign.':'Your wallet signs each transaction. Roll settlement uses verified drand randomness.');
   $('stat-earned').textContent=crypto?.configured?`${fmtTokens(crypto.total_supply_units)} ✨`:'—';
   $('pending-transaction').hidden=!pendingTransaction;
@@ -217,6 +227,7 @@ async function confirmTransaction(record,provider){
     state.roll=state.roll?.id===result.id&&state.roll.clip?{...result,clip:state.roll.clip}:result;
   }else if(record.action==='rate_session')await api('rating-session/confirm',{transaction_hash:record.hash});
   else if(record.action==='rate_clip')await api('rate',{id:record.clip_id,score:record.score,transaction_hash:record.hash});
+  else if(['register_seeder'].includes(record.action))await api('crypto/confirm-account',{transaction_hash:record.hash,action:record.action});
   await forgetTransaction();walletPhase='';await refresh();
 }
 async function sendCryptoTransaction(action,fields={}){
@@ -287,7 +298,7 @@ function sortLibrary(library,sort){
 function renderLibrary(){
   if(!state)return;
   const library=sortLibrary(state.library,$('library-sort').value);
-  const markup=library.length?library.map(({clip:c,seeding,beneficiary,average_rating,rating_count})=>`<div class="library-row"><button class="clip-thumb" data-preview="${c.id}" aria-label="Preview ${esc(c.title)}">▷</button><div class="row-detail"><h3>${esc(c.title)}</h3><p>${esc(c.extension.toUpperCase())} · ${duration(c.duration_secs)} · ${c.width} × ${c.height} · ${(c.size/1e6).toFixed(2)} MB</p><p class="clip-stats"><span title="Average of 1–9 ratings; skips are excluded.">${average_rating===null?'Unrated':`Rating <strong>${average_rating.toFixed(1)} / 9</strong> · ${rating_count} rating${rating_count===1?'':'s'}`}</span></p></div><span class="seeding-tag">${seeding?'● Seeding':'○ Unavailable'}</span><div class="row-actions">${beneficiary?`<span class="registered-token" title="${esc(beneficiary)}">✨ Registered</span>`:`<button data-register="${c.id}" ${walletAvailable()?'':'disabled'}>Register ✨ wallet</button>`}<button data-torrent="${c.id}">Torrent ↗</button><button data-remove="${c.id}">Remove</button></div></div>`).join(''):'<div class="library-empty"><span aria-hidden="true">▧</span><h3>No clips yet</h3></div>';
+  const markup=library.length?library.map(({clip:c,seeding,beneficiary,average_rating,rating_count})=>`<div class="library-row"><button class="clip-thumb" data-preview="${c.id}" aria-label="Preview ${esc(c.title)}">▷</button><div class="row-detail"><h3>${esc(c.title)}</h3><p>${esc(c.extension.toUpperCase())} · ${duration(c.duration_secs)} · ${c.width} × ${c.height} · ${(c.size/1e6).toFixed(2)} MB</p><p class="clip-stats"><span title="Average of 1–9 ratings; skips are excluded.">${average_rating===null?'Unrated':`Rating <strong>${average_rating.toFixed(1)} / 9</strong> · ${rating_count} rating${rating_count===1?'':'s'}`}</span></p></div><span class="seeding-tag">${seeding?'● Seeding':'○ Unavailable'}</span><div class="row-actions">${state.crypto?.seeder_registered?'<span class="registered-token">✨ Seeder wallet ready</span>':'<button data-seeder-settings>Set seeder wallet</button>'}<button data-torrent="${c.id}">Torrent ↗</button><button data-remove="${c.id}">Remove</button></div></div>`).join(''):'<div class="library-empty"><span aria-hidden="true">▧</span><h3>No clips yet</h3></div>';
   if($('library').innerHTML!==markup)$('library').innerHTML=markup;
 }
 function queueNavigation(operation){
@@ -362,9 +373,9 @@ function render(){
   $('waiting-title').textContent=state.session?'Waiting for clips':'Session paused';
   $('waiting-message').textContent=!state.session?'Start a session to watch and rate.':state.peers.length?'Waiting for a clip from your peers.':'Connect a peer to get started.';
   $('connect-peer').hidden=!state.session||state.peers.length>0;
-  const beneficiary=current?.beneficiary,ownClip=!!beneficiary&&beneficiary.toLowerCase()===state.crypto?.wallet?.toLowerCase();
-  $('rating-recipient').textContent=!current?'':!beneficiary?'This clip needs a registered wallet before it can receive ✨. You can skip for free.':ownClip?'This clip is registered to your wallet. You can skip for free.':`Recipient · ${beneficiary}`;
-  document.querySelectorAll('[data-score]').forEach(button=>{const score=Number(button.dataset.score);button.disabled=busy||rollBusy||walletBusy||transactionBusy||!playing||(score>0&&(!ratingWalletSelected()||!ratingDraftEditable()||queuedRatingCount()>=100||!beneficiary||ownClip||BigInt(score)*TOKEN_SCALE>spendableTokenBalance()||!!pendingTransaction));});
+  const preview=current?.distribution_preview;
+  $('rating-recipient').textContent=!current?'':preview?preview.seeders?`${preview.seeders} eligible permanent seeder${preview.seeders===1?'':'s'} · rewards calculated locally.${!seederPaymentsFit()?' Settle the current session before adding more seeder payments.':''}`:'No registered permanent seeders are available for payment. You can skip for free.':clipCanReceiveRating(current)?`Recipient · ${current.beneficiary}`:'This clip needs a registered wallet before it can receive ✨. You can skip for free.';
+  document.querySelectorAll('[data-score]').forEach(button=>{const score=Number(button.dataset.score);button.title=score>0&&preview?`${score} ✨ from your wallet; ${fmtTokens(preview.reward_units[score],0)} ✨ to each of ${preview.seeders} permanent seeders`:'';button.disabled=busy||rollBusy||walletBusy||transactionBusy||!playing||(score>0&&(!ratingWalletSelected()||!ratingDraftEditable()||queuedRatingCount()>=100||!clipCanReceiveRating(current)||!seederPaymentsFit()||BigInt(score)*TOKEN_SCALE>spendableTokenBalance()||!!pendingTransaction));});
   $('peer-id').textContent=state.profile_id;$('data-folder').textContent=state.data_folder;
   $('network-ports').textContent=`Peer TCP ${state.p2p_port} · BitTorrent TCP ${state.torrent_port}`;
   $('listen-addresses').innerHTML=state.addresses.length?state.addresses.map(address=>`<button type="button" data-address="${esc(address)}" title="Copy peer address">${esc(address)}</button>`).join(''):'Finding addresses…';
@@ -492,7 +503,8 @@ async function rate(score){
     if(!ratingWalletSelected()){toast('Select a configured wallet before queueing paid ratings.');return;}
     if(!ratingDraftEditable()||pendingTransaction){toast('Confirm the frozen session transaction before queueing more ratings.');return;}
     if(queuedRatingCount()>=100){toast('This session has 100 ratings. Settle or discard it before queueing more.');return;}
-    if(!current.beneficiary||current.beneficiary.toLowerCase()===state.crypto.wallet.toLowerCase()){toast('This clip needs a registered wallet other than your own before you can queue ✨.');return;}
+    if(!clipCanReceiveRating(current)){toast('This clip needs an eligible permanent seeder wallet before you can queue ✨.');return;}
+    if(!seederPaymentsFit()){toast('This session has reached its limit of 1000 seeder payments. Settle it before rating more clips.');return;}
     if(BigInt(score)*TOKEN_SCALE>spendableTokenBalance()){toast('Your available ✨ balance is already reserved by queued ratings.');return;}
   }
   busy=true;render();
@@ -535,6 +547,12 @@ $('settle-rating-session').addEventListener('click',settleRatingSession);
 $('discard-rating-session').addEventListener('click',discardRatingSession);
 $('unlock-rating-session').addEventListener('click',unlockRatingSession);
 $('rating-session-recover').addEventListener('click',recoverRatingSession);
+$('register-seeder').addEventListener('click',async()=>{
+  if(walletBusy||transactionBusy||rollBusy||busy)return;
+  walletBusy=true;renderWallet();
+  try{await sendCryptoTransaction('register_seeder');toast('Seeder wallet registered. Your permanent seeds can receive rewards.');}
+  catch(error){toast(error.message);}finally{walletBusy=false;walletPhase='';render();}
+});
 $('dropzone').addEventListener('click',event=>{if(event.target!==$('file-input'))$('file-input').click();});
 $('dropzone').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('file-input').click();}});
 $('file-input').addEventListener('change',event=>uploads([...event.target.files]));
@@ -543,8 +561,8 @@ for(const name of ['dragleave','drop'])$('dropzone').addEventListener(name,event
 $('dropzone').addEventListener('drop',event=>uploads([...event.dataTransfer.files]));
 $('library-sort').addEventListener('change',renderLibrary);
 $('library').addEventListener('click',async event=>{
-  const preview=event.target.closest('[data-preview]'),remove=event.target.closest('[data-remove]'),torrent=event.target.closest('[data-torrent]'),register=event.target.closest('[data-register]');
-  if(register){if(walletBusy||rollBusy||busy)return;walletBusy=true;register.disabled=true;try{await sendCryptoTransaction('register_clip',{clip_id:register.dataset.register});toast('Clip wallet registered on MegaETH.');await refresh();}catch(error){toast(error.message);}finally{walletPhase='';walletBusy=false;render();}}
+  if(event.target.closest('[data-seeder-settings]')){navigate('settings');return;}
+  const preview=event.target.closest('[data-preview]'),remove=event.target.closest('[data-remove]'),torrent=event.target.closest('[data-torrent]');
   if(preview){const clip=state.library.find(item=>item.clip.id===preview.dataset.preview).clip;$('preview-title').textContent=clip.title;$('preview-video').src=mediaUrl(clip.id);$('preview-dialog').showModal();$('preview-video').play().catch(()=>{});}
   if(remove){remove.disabled=true;try{await api(`remove/${remove.dataset.remove}`,{});toast('Removed from your seed collection.');await refresh();}catch(error){toast(error.message);remove.disabled=false;}}
   if(torrent){try{const response=await fetch(`/api/torrent/${torrent.dataset.torrent}`,{headers:{'x-clipcrop-token':token}});if(!response.ok)throw Error('Could not export torrent.');const blob=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=blob;link.download=`${torrent.dataset.torrent}.torrent`;link.click();setTimeout(()=>URL.revokeObjectURL(blob),30000);}catch(error){toast(error.message);}}

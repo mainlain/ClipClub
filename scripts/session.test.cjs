@@ -175,3 +175,27 @@ test('native prepared-session recovery remains visible and never resubmits appro
   assert.equal(app.elements.get('rating-session-recovery').open,true);assert.equal(app.elements.get('rating-session-recover').disabled,false);assert.equal(app.elements.get('settle-rating-session').disabled,true);assert.match(app.elements.get('rating-session-help').textContent,/Reject any open wallet approval first/);
   app.elements.get('rating-session-hash').value=hash;await app.run('recoverRatingSession()');assert.equal(app.state.crypto.rating_session,null);assert.equal(app.walletCalls.length,0);
 });
+
+
+test('seeder reward previews allow ratings without prefunding and reserve only the score',async()=>{
+  const app=fixture(),preview={seeders:5,population:100,reward_units:['0',...Array(9).fill('2570331')]};
+  app.state.queue[0].beneficiary=null;app.state.queue[0].distribution_preview=preview;
+  app.state.crypto.rating_credit_units='0';app.run('render()');
+  assert.equal(app.scoreButtons[5].disabled,false);
+  assert.doesNotMatch(app.elements.get('rating-recipient').textContent,/Fund your rating budget/);
+  await app.run('rate(5)');
+  assert.equal(app.state.crypto.rating_session.total_units,'5000000');assert.equal(app.walletCalls.length,0);
+});
+
+test('session review separates the rater charge from every seeder reward and escapes wallet text',async()=>{
+  const app=fixture();await queue(app,[5]);const session=app.state.crypto.rating_session;
+  session.payout_units='12851655';session.mint_required_units='7851655';
+  session.ratings[0].distribution={population:100,reward_units:'2570331',recipients:Array.from({length:5},(_,i)=>({peer:`peer-${i}`,wallet:i?'0x'+String(i).repeat(40):'<unsafe wallet>'}))};
+  app.run('render()');
+  assert.match(app.elements.get('rating-session-summary').textContent,/5\.00 ✨ total/);
+  assert.match(app.elements.get('rating-session-available').textContent,/12\.851655 ✨/);
+  assert.match(app.elements.get('rating-session-available').textContent,/7\.851655 ✨ estimated new tokens minted/);
+  assert.match(app.elements.get('rating-session-items').innerHTML,/2\.570331 ✨ each/);
+  assert.match(app.elements.get('rating-session-items').innerHTML,/&lt;unsafe wallet&gt;/);
+  await app.run('settleRatingSession()');assert.equal(sends(app).length,1);assert.equal(app.state.crypto.balance_units,'995000000');
+});

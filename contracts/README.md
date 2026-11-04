@@ -43,31 +43,19 @@ three to six seconds before proof availability, plus transaction delays.
 
 ## Ratings
 
-`registerClip(bytes32)` permanently assigns the registering wallet as that
-content ID's payment recipient. First registration wins. This is a payment
-directory, not evidence of authorship; registration can be front-run or squatted.
-Register before distributing a clip and check the recipient before paying.
+The app computes the selected seeder curve and six-decimal rewards locally, using a persistent 30-day population estimate (minimum 21) and registered permanent seeders. Each queued rating freezes its population, recipients and per-seeder reward. No formula or population census runs on-chain.
 
-`rateClips(bytes32,bytes32[],uint8[],bytes32)` settles an entire rating session
-in one transaction. It accepts 1–100 distinct clips, matching scores of 1–9,
-a nonzero session ID, and the SHA-256 commitment of the rater's peer identity.
-The contract checks the aggregate balance, pays every registered recipient,
-emits one `ClipRated` event per item and a final `RatingsSettled` summary, and
-marks that wallet's session ID consumed. A wallet cannot pay itself or rate
-the same clip twice. Any failed item reverts every payment, event, and replay
-marker in that batch. Ratings transfer existing tokens without changing supply.
-The single-clip `rateClip` method remains available for interoperability.
+`registerSeeder(bytes32)` binds the calling wallet to the SHA-256 commitment of a peer identity. The authenticated peer advertises that wallet and its permanent clips. The app verifies this binding, excludes temporary seeds and the rater, and deduplicates wallets and peers. The contract does not independently prove seeding or Sybil resistance.
 
-The app queues ratings locally without wallet prompts. Queued ratings reserve
-only the displayed budget; tokens remain in the wallet until checkout. Ending
-the session offers one payment approval. Navigating away or closing the app
-keeps the unpaid draft. Rejecting approval preserves it; a submitted batch
-cannot be edited or discarded. The app validates the successful canonical
-receipt's exact item events, session ID, total, and peer commitment before
-atomically saving all rating receipts. Retrying confirmation uses the same
-transaction hash and cannot pay twice. A verified reverted transaction resets
-the unchanged draft for another attempt. Zero is always a free local skip.
-Peer-reported seeder counts cannot mint tokens or claim another peer's payment.
+`settleSeederRatings(bytes32,SeederRating[],bytes32)` settles up to 100 clips and 1,000 seeder payments atomically. A `SeederRating` contains the clip ID, score, local population, reward per seeder, sorted recipient wallets and matching peer commitments. The rater pays exactly the sum of scores. For total charge C, seeder payout P and existing rating credit B, the contract mints `max(0, P - C - B)` and sets `ratingCredit[rater]` to `max(0, B + C - P)`. Unused contributions fund that wallet's future rewards. Insufficient rater balance or exhausted arithmetic capacity reverts every transfer, mint and replay marker. Credit belonging to another wallet and roll escrow remain untouched.
+
+No prefunding or manual grant transaction is required. `totalRatingMinted` tracks cumulative seeder issuance. `SeederFunding` records the payout, minted amount and the rater's credit before/after. The app verifies this accounting from canonical events. Rating minting and roll commitments share capacity checks so new seeder issuance cannot consume supply headroom reserved for pending roll payouts.
+
+Automatic rating minting is permissionless within contract bounds. The contract does not validate the locally evaluated curve, prove storage, require reward attestations, or apply a policy emissions schedule/cap. Client-side observations and formula enforcement can be bypassed by modified clients; registration, replay protection and basic reward/batch bounds still apply.
+
+The contract enforces registered peer bindings, distinct sorted wallets, 1–9 scores, basic curve-domain/reward bounds, and per-wallet clip/session replay protection. It emits `SeederDistribution` and `SeederPaid` records, one `ClipRated` event per clip with the rater's charge, and a final `RatingsSettled` summary. The app verifies every recipient, reward, count, population, session, rater and peer commitment against the frozen draft before atomically committing receipts. Rejected approvals keep the unpaid draft; confirmation retries never send another payment.
+
+`registerClip`, `rateClip` and `rateClips` remain as legacy single-recipient APIs for old drafts. They never mint seeder rewards. Archived signed points receipts retain their original calculation and cannot redeem tokens. See [the distribution design](../docs/RATING_DISTRIBUTION.md) for the formula and full trust model.
 
 ## Build and test
 
@@ -102,10 +90,10 @@ inside ClipClub's Rust application or is used to hold wallet keys.
 
 ## Prepare and deploy
 
-**Deployment is intentionally on hold pending the corrected rating distribution formula.** `mainnet-launch.json` records this status, and both preparation and preview commands stop before proceeding. Current contract economics remain unchanged; logo work is complete.
+**Distribution integration is implemented; deployment remains on hold for final review.** `mainnet-launch.json` records the hold, and preparation and preview commands stop before proceeding. The genesis supply goes to the treasury; seeder reward shortfalls are minted automatically during session settlement.
 
 No contract has been deployed by this change. A funded MegaETH wallet is needed
-for deployment, clip registration, ratings, requests, and reveal transactions.
+for deployment, seeder registration, ratings, requests, and reveal transactions.
 
 | Network | Chain ID | RPC | Immutable verifier |
 | --- | ---: | --- | --- |

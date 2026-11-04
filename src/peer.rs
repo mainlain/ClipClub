@@ -75,6 +75,8 @@ pub enum PeerEvent {
         peer: String,
         name: String,
         seeded: Vec<String>,
+        permanent: Vec<String>,
+        wallet: Option<String>,
         /// Available only for a directly authenticated connection. An author
         /// cannot use gossip to instruct arbitrary third-party TCP connections.
         torrent_addr: Option<SocketAddr>,
@@ -97,6 +99,8 @@ impl PeerHandle {
         seeded: Vec<String>,
         name: String,
         torrent_port: u16,
+        permanent: Vec<String>,
+        wallet: Option<String>,
     ) -> Result<()> {
         if clips.len() > MAX_SEEDED || seeded.len() > MAX_SEEDED {
             bail!("Seeder announcements are limited to 100 clips");
@@ -109,6 +113,8 @@ impl PeerHandle {
             seeded,
             name,
             torrent_port,
+            permanent,
+            wallet,
         }))
         .await
     }
@@ -153,6 +159,8 @@ struct Snapshot {
     seeded: Vec<String>,
     name: String,
     torrent_port: u16,
+    permanent: Vec<String>,
+    wallet: Option<String>,
 }
 
 enum Command {
@@ -173,6 +181,10 @@ enum WireMessage {
         name: String,
         seeded: Vec<String>,
         torrent_port: u16,
+        #[serde(default)]
+        permanent: Vec<String>,
+        #[serde(default)]
+        wallet: Option<String>,
     },
     Receipt {
         receipt: RatingReceipt,
@@ -301,12 +313,22 @@ fn validate_wire(wire: &WireMessage) -> bool {
             name,
             seeded,
             torrent_port,
+            permanent,
+            wallet,
         } => {
             name.len() <= 96
                 && seeded.len() <= MAX_SEEDED
                 && *torrent_port != 0
                 && seeded.iter().all(|id| valid_id(id))
                 && seeded.iter().collect::<HashSet<_>>().len() == seeded.len()
+                && permanent.len() <= MAX_SEEDED
+                && permanent.iter().all(|id| seeded.contains(id))
+                && permanent.iter().collect::<HashSet<_>>().len() == permanent.len()
+                && wallet.as_ref().is_none_or(|address| {
+                    address.len() == 42
+                        && address.starts_with("0x")
+                        && address[2..].bytes().all(|b| b.is_ascii_hexdigit())
+                })
         }
         WireMessage::Receipt { receipt } => receipt.verify().is_ok(),
     }
@@ -329,6 +351,8 @@ fn broadcast(swarm: &mut Swarm<Behaviour>, topic: &gossipsub::IdentTopic, snapsh
         name: snapshot.name.chars().take(64).collect(),
         seeded: snapshot.seeded.clone(),
         torrent_port: snapshot.torrent_port,
+        permanent: snapshot.permanent.clone(),
+        wallet: snapshot.wallet.clone(),
     };
     publish(swarm, topic, &presence);
     for clip in &snapshot.clips {
@@ -346,6 +370,8 @@ fn broadcast_changes(
         return;
     }
     if previous.seeded != current.seeded
+        || previous.permanent != current.permanent
+        || previous.wallet != current.wallet
         || previous.name != current.name
         || previous.torrent_port != current.torrent_port
     {
@@ -356,6 +382,8 @@ fn broadcast_changes(
                 name: current.name.chars().take(64).collect(),
                 seeded: current.seeded.clone(),
                 torrent_port: current.torrent_port,
+                permanent: current.permanent.clone(),
+                wallet: current.wallet.clone(),
             },
         );
     }
@@ -493,9 +521,9 @@ async fn run(
                     let Some(author) = message.source else { continue; };
                     match wire.expect("validated wire") {
                         WireMessage::Advert { clip } => { let _ = events.try_send(PeerEvent::Advert { peer: author.to_string(), clip }); },
-                        WireMessage::Presence { name, seeded, torrent_port } => {
+                        WireMessage::Presence { name, seeded, torrent_port, permanent, wallet } => {
                             let torrent_addr = peer_ips.get(&author).map(|ip| SocketAddr::new(*ip, torrent_port));
-                            let _ = events.try_send(PeerEvent::Presence { peer: author.to_string(), name, seeded, torrent_addr });
+                            let _ = events.try_send(PeerEvent::Presence { peer: author.to_string(), name, seeded, permanent, wallet, torrent_addr });
                         },
                         WireMessage::Receipt { receipt } => { let _ = events.try_send(PeerEvent::Receipt(receipt)); },
                     }
@@ -520,18 +548,43 @@ mod tests {
         assert!(validate_wire(&WireMessage::Presence {
             name: "Alice".into(),
             seeded: vec![id.clone()],
-            torrent_port: 42832
+            torrent_port: 42832,
+            permanent: vec![],
+            wallet: None
         }));
         assert!(!validate_wire(&WireMessage::Presence {
             name: "Alice".into(),
             seeded: vec![id.clone(), id],
-            torrent_port: 42832
+            torrent_port: 42832,
+            permanent: vec![],
+            wallet: None
         }));
         assert!(!validate_wire(&WireMessage::Presence {
             name: "Alice".into(),
             seeded: vec!["../evil".into()],
-            torrent_port: 42832
+            torrent_port: 42832,
+            permanent: vec![],
+            wallet: None
         }));
+    }
+
+    #[test]
+    fn permanent_seeds_must_be_available_and_wallet_announcements_are_bounded() {
+        let id = "a".repeat(64);
+        let valid = WireMessage::Presence {
+            name: "Seeder".into(),
+            seeded: vec![id.clone()],
+            permanent: vec![id.clone()],
+            wallet: Some("0x1111111111111111111111111111111111111111".into()),
+            torrent_port: 14000,
+        };
+        assert!(validate_wire(&valid));
+        let mut value = serde_json::to_value(&valid).unwrap();
+        value["permanent"] = serde_json::json!(["b".repeat(64)]);
+        assert!(!validate_wire(&serde_json::from_value(value).unwrap()));
+        let mut value = serde_json::to_value(valid).unwrap();
+        value["wallet"] = "not-a-wallet".into();
+        assert!(!validate_wire(&serde_json::from_value(value).unwrap()));
     }
 
     #[test]
@@ -568,13 +621,13 @@ mod tests {
         .await
         .unwrap();
         alice
-            .announce(vec![], vec![], "Alice".into(), 14001)
+            .announce(vec![], vec![], "Alice".into(), 14001, vec![], None)
             .await
             .unwrap();
         let (bob, mut bob_events) = start(identity::Keypair::generate_ed25519(), 0, vec![])
             .await
             .unwrap();
-        bob.announce(vec![], vec![], "Bob".into(), 14002)
+        bob.announce(vec![], vec![], "Bob".into(), 14002, vec![], None)
             .await
             .unwrap();
         bob.dial(address).await.unwrap();

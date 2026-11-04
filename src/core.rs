@@ -32,10 +32,20 @@ pub const MICROS_PER_POINT: u64 = 1_000_000;
 pub const INITIAL_MICROPOINTS: u64 = 100 * MICROS_PER_POINT;
 pub const ROLL_TICKETS: u16 = 1023;
 pub const MAX_ROLL_WAGER_MICROPOINTS: u64 = u64::MAX / 9;
+pub const MONTHLY_ACTIVITY_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+const MAX_ACTIVITY_PEERS: usize = 100_000;
 const ROLL_CLIP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TORRENT_BYTES: usize = 256 * 1024;
 const MAX_LEDGER_RECEIPTS: usize = 100_000;
+
+pub fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Clip {
@@ -434,6 +444,8 @@ pub struct State {
     pub library: BTreeMap<String, LocalClip>,
     pub watched: BTreeSet<String>,
     pub receipts: Vec<RatingReceipt>,
+    #[serde(default)]
+    pub peer_activity: BTreeMap<String, u64>,
 }
 
 impl State {
@@ -446,6 +458,7 @@ impl State {
             library: BTreeMap::new(),
             watched: BTreeSet::new(),
             receipts: Vec::new(),
+            peer_activity: BTreeMap::new(),
         }
     }
 }
@@ -480,6 +493,16 @@ impl Store {
                 "State belongs to a different identity"
             );
             data.settings.validate()?;
+            ensure!(
+                data.peer_activity.len() <= MAX_ACTIVITY_PEERS,
+                "Peer activity history is too large"
+            );
+            for peer in data.peer_activity.keys() {
+                ensure!(
+                    peer.parse::<PeerId>().is_ok(),
+                    "Invalid activity peer identity"
+                );
+            }
             ensure!(
                 data.library.len() <= MAX_LIBRARY_FILES,
                 "Library exceeds 100 clips"
@@ -577,6 +600,43 @@ impl Store {
         let before = self.data.clone();
         self.data.settings = settings;
         self.commit(before)
+    }
+
+    /// Fresh authenticated presence counts even when it advertises no clips.
+    /// Connectivity cleanup never deletes this persistent 30-day history.
+    pub fn observe_peer(&mut self, peer: &str, now_ms: u64) -> Result<()> {
+        ensure!(
+            peer.parse::<PeerId>().is_ok(),
+            "Invalid activity peer identity"
+        );
+        if peer == self.data.profile_id {
+            return Ok(());
+        }
+        let before = self.data.clone();
+        self.data
+            .peer_activity
+            .retain(|_, seen| *seen <= now_ms && now_ms - *seen < MONTHLY_ACTIVITY_MS);
+        ensure!(
+            self.data.peer_activity.contains_key(peer)
+                || self.data.peer_activity.len() < MAX_ACTIVITY_PEERS,
+            "Monthly activity history is full"
+        );
+        self.data.peer_activity.insert(peer.to_owned(), now_ms);
+        self.commit(before)
+    }
+
+    pub fn monthly_population(&self, now_ms: u64) -> usize {
+        (1 + self
+            .data
+            .peer_activity
+            .iter()
+            .filter(|(peer, seen)| {
+                *peer != &self.data.profile_id
+                    && **seen <= now_ms
+                    && now_ms - **seen < MONTHLY_ACTIVITY_MS
+            })
+            .count())
+        .max(crate::rating_distribution::MIN_POPULATION)
     }
 
     pub fn add_clip(&mut self, clip: Clip) -> Result<bool> {
@@ -1067,6 +1127,39 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monthly_population_persists_distinct_presence_and_expires_after_thirty_days() {
+        let (mut store, _, _) = fixture();
+        let now = MONTHLY_ACTIVITY_MS * 2;
+        let peers: Vec<_> = (0..25)
+            .map(|_| {
+                Keypair::generate_ed25519()
+                    .public()
+                    .to_peer_id()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(store.monthly_population(now), 21);
+        for peer in &peers {
+            store.observe_peer(peer, now).unwrap();
+        }
+        store.observe_peer(&peers[0], now + 1).unwrap();
+        assert_eq!(store.monthly_population(now + 1), 26);
+        let reopened = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+        assert_eq!(
+            reopened.monthly_population(now + MONTHLY_ACTIVITY_MS - 1),
+            26
+        );
+        assert_eq!(reopened.monthly_population(now + MONTHLY_ACTIVITY_MS), 21);
+        assert_eq!(reopened.data.peer_activity.len(), 25);
+        assert_eq!(reopened.monthly_population(now - 1), 21);
+        assert!(store.observe_peer("not-a-peer", now).is_err());
+        let own = store.data.profile_id.clone();
+        store.observe_peer(&own, now + MONTHLY_ACTIVITY_MS).unwrap();
+        assert!(!store.data.peer_activity.contains_key(&own));
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
+    }
 
     fn fixture() -> (Store, Keypair, Vec<String>) {
         let key = Keypair::generate_ed25519();

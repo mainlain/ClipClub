@@ -269,8 +269,12 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
 .rating-session-card details > summary { font-size: 10px; }
 #rating-session-items { list-style: none; padding: 0; margin: 13px 0; max-height: 150px; overflow: auto; }
 #rating-session-items li { display: flex; align-items: baseline; gap: 18px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 10px; }
-#rating-session-items .session-item-title { flex: 1; overflow-wrap: anywhere; font-size: 9px; }
+#rating-session-items .session-item-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 9px; white-space: normal; }
 #rating-session-items li span { white-space: nowrap; }
+#rating-session-items li .session-item-title { white-space: normal; }
+#rating-session-items details { margin-top: 6px; }
+#rating-session-items details div { margin: 5px 0; }
+#rating-session-items details code { white-space: normal; overflow-wrap: anywhere; }
 .session-recovery { margin-top: 16px; }
 .session-recovery .button { margin-top: 10px; }
 #rating-session-error { color: #a34427; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }

@@ -25,6 +25,7 @@ contract Joah is ERC20 {
     uint256 public nextRollId = 1;
     uint256 public totalBurned;
     uint256 public totalWinMinted;
+    uint256 public totalRatingMinted;
     /// @dev Reserve headroom for every pending 9x payout, preventing overflow
     /// from making a previously accepted roll impossible to settle.
     uint256 public reservedWinProfit;
@@ -41,12 +42,29 @@ contract Joah is ERC20 {
     mapping(bytes32 => address) public clipBeneficiary;
     mapping(bytes32 => mapping(address => bool)) public hasRated;
     mapping(address => mapping(bytes32 => bool)) public settledSession;
+    /// Unspent rating contributions reserved for this wallet's future rewards.
+    mapping(address => uint256) public ratingCredit;
+    mapping(address => bytes32) public seederPeer;
+    uint256 public constant MAX_SESSION_SEEDER_PAYMENTS = 1000;
+
+    struct SeederRating {
+        bytes32 clipId;
+        uint8 score;
+        uint256 population;
+        uint256 reward;
+        address[] recipients;
+        bytes32[] peers;
+    }
 
     event RollRequested(uint256 indexed id, address indexed player, uint256 wager, uint64 round);
     event RollSettled(uint256 indexed id, address indexed player, uint256 wager, uint256 payout, uint8 multiplier, uint64 round);
     event ClipRegistered(bytes32 indexed clipId, address indexed beneficiary);
     event ClipRated(bytes32 indexed clipId, address indexed rater, uint8 score, uint256 amount, bytes32 peerCommitment);
     event RatingsSettled(bytes32 indexed sessionId, address indexed rater, uint256 count, uint256 amount, bytes32 peerCommitment);
+    event SeederRegistered(address indexed wallet, bytes32 indexed peerCommitment);
+    event SeederFunding(bytes32 indexed sessionId, address indexed rater, uint256 payout, uint256 minted, uint256 creditBefore, uint256 creditAfter);
+    event SeederDistribution(bytes32 indexed sessionId, bytes32 indexed clipId, uint256 population, uint256 reward, uint256 count);
+    event SeederPaid(bytes32 indexed sessionId, bytes32 indexed clipId, address indexed recipient, bytes32 peerCommitment, uint256 amount);
 
     error UnsupportedNetwork();
     error InvalidVerifier();
@@ -98,12 +116,7 @@ contract Joah is ERC20 {
         if (pendingRoll[msg.sender] != 0) revert PendingRollExists();
         if (wager == 0 || wager > MAX_WAGER) revert InvalidWager();
         uint256 maxProfit = wager * 8;
-        uint256 tracked = totalSupply();
-        if (totalWinMinted > tracked) tracked = totalWinMinted;
-        if (totalBurned > tracked) tracked = totalBurned;
-        if (maxProfit > type(uint256).max - tracked - reservedWinProfit) {
-            revert SupplyCapacityExceeded();
-        }
+        _checkSupplyCapacity(maxProfit);
         // No allowance or external token callback: escrow this ERC20 directly.
         _transfer(msg.sender, address(this), wager);
         reservedWinProfit += maxProfit;
@@ -153,7 +166,89 @@ contract Joah is ERC20 {
         emit RollSettled(id, r.player, r.wager, payout, multiplier, r.round);
     }
 
-    /// @notice First on-chain registration fixes the recipient for a content ID.
+    /// @notice Bind this wallet to a peer identity advertised by that peer's
+    /// authenticated presence. Registration does not prove actual seeding.
+    function registerSeeder(bytes32 peerCommitment) external {
+        if (peerCommitment == bytes32(0)) revert InvalidRating();
+        seederPeer[msg.sender] = peerCommitment;
+        emit SeederRegistered(msg.sender, peerCommitment);
+    }
+
+    /// @notice The desktop app calculates the curve and freezes recipients.
+    /// Raters pay exactly the sum of scores. Unspent rating credit is used first,
+    /// then any remaining shortfall is minted. Roll escrow is never available.
+    function settleSeederRatings(bytes32 sessionId, SeederRating[] calldata ratings, bytes32 peerCommitment) external {
+        uint256 count = ratings.length;
+        if (sessionId == bytes32(0) || peerCommitment == bytes32(0)
+            || count == 0 || count > MAX_RATINGS_PER_SESSION) revert InvalidRatingSession();
+        if (settledSession[msg.sender][sessionId]) revert RatingSessionAlreadySettled();
+        uint256 charge;
+        uint256 payout;
+        uint256 payments;
+        for (uint256 i; i < count; ++i) {
+            SeederRating calldata r = ratings[i];
+            uint256 n = r.recipients.length;
+            if (r.clipId == bytes32(0) || r.score == 0 || r.score > 9
+                || n == 0 || n != r.peers.length || r.population < 21 || n > r.population
+                || r.reward < uint256(r.score) * UNIT / 100
+                || r.reward > uint256(r.score) * UNIT) revert InvalidRating();
+            if (hasRated[r.clipId][msg.sender]) revert AlreadyRated();
+            hasRated[r.clipId][msg.sender] = true;
+            payments += n;
+            if (payments > MAX_SESSION_SEEDER_PAYMENTS) revert InvalidRatingSession();
+            address previous;
+            for (uint256 j; j < n; ++j) {
+                address recipient = r.recipients[j];
+                // Strict wallet order prevents duplicate payments within a clip.
+                if (recipient <= previous || recipient == msg.sender || recipient == address(this)
+                    || r.peers[j] == bytes32(0) || r.peers[j] == peerCommitment
+                    || seederPeer[recipient] != r.peers[j]) revert InvalidRating();
+                previous = recipient;
+            }
+            charge += uint256(r.score) * UNIT;
+            payout += r.reward * n;
+        }
+        {
+            uint256 creditBefore = ratingCredit[msg.sender];
+            uint256 available = creditBefore + charge;
+            uint256 minted = payout > available ? payout - available : 0;
+            if (minted != 0) _checkSupplyCapacity(minted);
+            uint256 creditAfter = minted == 0 ? available - payout : 0;
+            ratingCredit[msg.sender] = creditAfter;
+            settledSession[msg.sender][sessionId] = true;
+            _transfer(msg.sender, address(this), charge);
+            if (minted != 0) {
+                totalRatingMinted += minted;
+                _mint(address(this), minted);
+            }
+            emit SeederFunding(sessionId, msg.sender, payout, minted, creditBefore, creditAfter);
+        }
+        for (uint256 i; i < count; ++i) {
+            SeederRating calldata r = ratings[i];
+            emit SeederDistribution(sessionId, r.clipId, r.population, r.reward, r.recipients.length);
+            for (uint256 j; j < r.recipients.length; ++j) {
+                _transfer(address(this), r.recipients[j], r.reward);
+                emit SeederPaid(sessionId, r.clipId, r.recipients[j], r.peers[j], r.reward);
+            }
+            emit ClipRated(r.clipId, msg.sender, r.score, uint256(r.score) * UNIT, peerCommitment);
+        }
+        emit RatingsSettled(sessionId, msg.sender, count, charge, peerCommitment);
+    }
+
+    /// Keep supply and cumulative counters within uint256, including the
+    /// worst-case profit already promised to every pending roll.
+    function _checkSupplyCapacity(uint256 additional) private view {
+        uint256 tracked = totalSupply();
+        if (totalWinMinted > tracked) tracked = totalWinMinted;
+        if (totalRatingMinted > tracked) tracked = totalRatingMinted;
+        if (totalBurned > tracked) tracked = totalBurned;
+        if (additional > type(uint256).max - tracked - reservedWinProfit) {
+            revert SupplyCapacityExceeded();
+        }
+    }
+
+    /// @notice Legacy single-recipient payment API, retained for old drafts.
+    /// First on-chain registration fixes the recipient for a content ID.
     /// This registers a payment recipient, not a claim of copyright/ownership.
     function registerClip(bytes32 clipId) external {
         if (clipId == bytes32(0)) revert InvalidClip();

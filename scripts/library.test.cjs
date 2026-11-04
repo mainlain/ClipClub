@@ -77,7 +77,7 @@ test('refresh keeps the selected sort and updates scores without confusing unrat
   assert.match(app.elements.get('library').innerHTML, /8\.0 \/ 9<\/strong> · 2 ratings</);
   assert.match(app.elements.get('library').innerHTML, /Unrated/);
   assert.doesNotMatch(app.elements.get('library').innerHTML, /points earned|legacy_points_earned/);
-  assert.match(app.elements.get('library').innerHTML, /Register ✨ wallet/);
+  assert.match(app.elements.get('library').innerHTML, /Set seeder wallet/);
   app.context.fixture[2].average_rating = 9;
   app.context.fixture[2].rating_count = 1;
   app.render();
