@@ -16,6 +16,10 @@ codec_prefix="${CLIPCROP_CODEC_PREFIX:-$build_directory/codecs}"
 output_directory="${CLIPCROP_FFPROBE_OUTPUT:-$project_root/.build/release-ffprobe}"
 host_system="$(uname -s)"
 [[ "$host_system" == Linux || "$host_system" == Darwin ]] || { printf 'Use a native Linux or macOS host.\n' >&2; exit 1; }
+if [[ "$host_system" == Darwin && "$(uname -m)" != arm64 ]]; then
+  printf 'Build the macOS validator on Apple Silicon.\n' >&2
+  exit 1
+fi
 [[ -f "$source_archive" ]] || { printf 'Provide ffmpeg-9.0.2.tar.xz with CLIPCROP_FFMPEG_SOURCE.\n' >&2; exit 1; }
 [[ -f "$dav1d_archive" ]] || { printf 'Provide dav1d-1.5.3.tar.xz with CLIPCROP_DAV1D_SOURCE.\n' >&2; exit 1; }
 python3 - "$source_archive" "$dav1d_archive" <<'PY'

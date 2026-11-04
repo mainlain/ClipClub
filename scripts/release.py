@@ -18,7 +18,6 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 TARGETS = {
     'aarch64-apple-darwin': ('Darwin', 'arm64', 'macos-aarch64', '.zip'),
-    'x86_64-apple-darwin': ('Darwin', 'x86_64', 'macos-x86_64', '.zip'),
     'x86_64-unknown-linux-gnu': ('Linux', 'x86_64', 'linux-x86_64', '.tar.gz'),
 }
 SEMVER_CORE = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
@@ -57,11 +56,12 @@ def digest(path):
 
 
 def check_binary(path, target):
+    if target not in TARGETS:
+        raise ValueError(f'Unsupported release target: {target}')
     with path.open('rb') as binary:
         header = binary.read(20)
-    if target.endswith('apple-darwin'):
-        cpu = 0x0100000C if target.startswith('aarch64') else 0x01000007
-        valid = len(header) >= 8 and header[:4] == b'\xcf\xfa\xed\xfe' and struct.unpack('<I', header[4:8])[0] == cpu
+    if target == 'aarch64-apple-darwin':
+        valid = len(header) >= 8 and header[:4] == b'\xcf\xfa\xed\xfe' and struct.unpack('<I', header[4:8])[0] == 0x0100000C
     else:
         valid = len(header) >= 20 and header[:6] == b'\x7fELF\x02\x01' and struct.unpack('<H', header[18:20])[0] == 62
     if not valid:

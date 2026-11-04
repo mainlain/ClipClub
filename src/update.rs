@@ -270,7 +270,6 @@ impl Updater {
 fn platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("macos-aarch64.zip"),
-        ("macos", "x86_64") => Some("macos-x86_64.zip"),
         ("linux", "x86_64") => Some("linux-x86_64.tar.gz"),
         _ => None,
     }

@@ -47,9 +47,13 @@ class ReleaseTests(unittest.TestCase):
             binary = Path(directory) / 'probe'
             binary.write_bytes(b'\xcf\xfa\xed\xfe' + struct.pack('<I', 0x0100000C) + b'\0' * 12)
             release.check_binary(binary, 'aarch64-apple-darwin')
-            for target in ('x86_64-apple-darwin', 'x86_64-unknown-linux-gnu'):
+            for target in ('unsupported-target', 'x86_64-unknown-linux-gnu'):
                 with self.assertRaises(ValueError):
                     release.check_binary(binary, target)
+            binary.write_bytes(b'\x7fELF\x02\x01' + b'\0' * 10 + struct.pack('<HH', 2, 62))
+            release.check_binary(binary, 'x86_64-unknown-linux-gnu')
+            with self.assertRaises(ValueError):
+                release.check_binary(binary, 'aarch64-apple-darwin')
 
     def test_manifest_requires_every_platform_and_records_real_digests(self):
         version = release.release_version()
@@ -67,7 +71,7 @@ class ReleaseTests(unittest.TestCase):
             release.write_manifest(args)
             data = json.loads((root / 'update-manifest.json').read_text())
             self.assertEqual(data['version'], version)
-            self.assertEqual(len(data['assets']), 4)
+            self.assertEqual(len(data['assets']), 3)
             for asset in data['assets']:
                 contents = (root / asset['name']).read_bytes()
                 self.assertEqual(asset['size'], len(contents))

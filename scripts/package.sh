@@ -36,6 +36,11 @@ export CLIPCROP_FFPROBE="$probe_path"
 build_args=(build --locked --release --features bundle-ffprobe)
 target_directory="${CARGO_TARGET_DIR:-$project_root/target}"
 target_triple="${CLIPCROP_TARGET:-}"
+if [[ "$target_triple" == *apple-darwin && "$target_triple" != aarch64-apple-darwin ]] \
+    || [[ -z "$target_triple" && "$(uname -s)" == Darwin && "$(uname -m)" != arm64 ]]; then
+  printf 'macOS packages require Apple Silicon (aarch64-apple-darwin).\n' >&2
+  exit 1
+fi
 if [[ -n "$target_triple" ]]; then
   build_args+=(--target "$target_triple")
   target_directory="$target_directory/$target_triple"
@@ -107,7 +112,7 @@ inventory.sort(key=lambda entry: (entry["name"], entry["version"]))
 (destination / "rust-dependencies.json").write_text(json.dumps(inventory, indent=2) + "\n")
 PY
 
-if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == *apple-darwin ) ]]; then
+if [[ "$(uname -s)" == Darwin && ( -z "$target_triple" || "$target_triple" == aarch64-apple-darwin ) ]]; then
   app_directory="$dist_directory/clipclub.app"
   mkdir -p "$app_directory/Contents/MacOS" "$app_directory/Contents/Resources"
   cp "$dist_directory/clipclub" "$app_directory/Contents/MacOS/clipclub"

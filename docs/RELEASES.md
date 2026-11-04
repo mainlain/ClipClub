@@ -8,7 +8,7 @@ Checks run at startup and every six hours, with a manual check in Settings. Choo
 
 1. Change `[package].version` in `Cargo.toml` and update the matching root package version in `Cargo.lock` with Cargo. Commit and push the completed change.
 2. Create a tag matching that version, for example `git tag v0.2.0`, then push that tag with `git push origin v0.2.0`.
-3. The **Build and publish release** workflow checks the tag against `Cargo.toml`, builds native macOS Apple Silicon, macOS Intel, and Linux x86-64 packages, runs the application checks and packaged-app smoke test, and collects all artifacts.
+3. The **Build and publish release** workflow checks the tag against `Cargo.toml`, builds native Apple Silicon macOS and Linux x86-64 packages, runs the application checks and packaged-app smoke test, and collects all artifacts.
 4. After all builds pass, the workflow stages every asset in a GitHub draft release and publishes it. GitHub selects the newest stable release using its creation-date/semantic-version ordering, so an older tag build finishing later does not force itself to latest. Tags with a prerelease suffix, such as `v0.2.0-rc.1`, are published as prereleases and are excluded from stable app updates.
 
 No release signing secret or GitHub personal token is needed. The publishing job uses the repository-scoped Actions token with `contents: write`; build jobs have read-only repository access. The workflow refuses to replace an already published release. Use a new version/tag for a changed binary. A failed publish can be retried while its release is still a draft.
@@ -17,7 +17,7 @@ The macOS bundles are ad hoc signed and verified, without Developer ID notarizat
 
 ## Verify builds without publishing
 
-Run the workflow manually from the desired branch with `tag` set to the version in that branch's `Cargo.toml` (for example `v0.1.0`) and leave `publish` false. A build-only run does not require that tag to exist. The three native package artifacts and complete release manifest are available on the Actions run. To publish from a manual run, select the exact existing version tag as the workflow revision and set `publish` true.
+Run the workflow manually from the desired branch with `tag` set to the version in that branch's `Cargo.toml` (for example `v0.1.0`) and leave `publish` false. A build-only run does not require that tag to exist. The two native build artifacts and complete release manifest are available on the Actions run. To publish from a manual run, select the exact existing version tag as the workflow revision and set `publish` true.
 
 Local release-tool checks are:
 
@@ -35,7 +35,6 @@ For version `0.2.0`, the assets are:
 | Target | Asset | Archive layout |
 | --- | --- | --- |
 | macOS Apple Silicon | `clipclub-0.2.0-macos-aarch64.zip` | `clipclub.app/` at the archive root |
-| macOS Intel | `clipclub-0.2.0-macos-x86_64.zip` | `clipclub.app/` at the archive root |
 | Linux x86-64 portable | `clipclub-0.2.0-linux-x86_64.tar.gz` | `clipclub-0.2.0-linux-x86_64/` at the archive root |
 | Debian/Ubuntu x86-64 | `clipclub_0.2.0_amd64.deb` | System package under `/opt/clipclub` with desktop entry |
 

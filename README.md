@@ -10,7 +10,7 @@ Token balances and payments live on MegaETH. Rolls commit to a future drand quic
 
 ## Run
 
-On macOS, open `dist/clipclub.app`, or run the executable:
+On Apple Silicon macOS, open `dist/clipclub.app`, or run the executable:
 
 ```sh
 ./dist/clipclub
@@ -34,7 +34,7 @@ clipclub checks the [latest published GitHub release](https://github.com/mainlai
 
 On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. Your identity, settings, public wallet selection, and clips stay in the existing profile folder. A direct macOS executable and system-managed installations such as a Debian package offer the matching download for manual installation. An update is installed only when you choose it.
 
-Release builds support macOS Apple Silicon, macOS Intel, and Linux x86-64. See [release publishing and update packaging](docs/RELEASES.md) for the tag-driven build workflow.
+Release builds support Apple Silicon macOS and Linux x86-64. See [release publishing and update packaging](docs/RELEASES.md) for the tag-driven build workflow.
 
 ## The four screens
 

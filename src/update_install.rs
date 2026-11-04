@@ -211,14 +211,9 @@ fn validate_binary(path: &Path, operating_system: &str, architecture: &str) -> R
         .read_exact(&mut header)
         .context("Invalid release executable")?;
     let valid = match (operating_system, architecture) {
-        ("macos", "aarch64" | "x86_64") => {
-            let expected_cpu = if architecture == "aarch64" {
-                0x0100000c
-            } else {
-                0x01000007
-            };
+        ("macos", "aarch64") => {
             header[..4] == [0xcf, 0xfa, 0xed, 0xfe]
-                && u32::from_le_bytes(header[4..8].try_into().unwrap()) == expected_cpu
+                && u32::from_le_bytes(header[4..8].try_into().unwrap()) == 0x0100000c
                 && u32::from_le_bytes(header[12..16].try_into().unwrap()) == 2
         }
         ("linux", "x86_64") => {
@@ -449,8 +444,10 @@ mod tests {
         macho[12..16].copy_from_slice(&2_u32.to_le_bytes());
         fs::write(&binary, macho).unwrap();
         assert!(validate_binary(&binary, "macos", "aarch64").is_ok());
-        assert!(validate_binary(&binary, "macos", "x86_64").is_err());
         assert!(validate_binary(&binary, "linux", "x86_64").is_err());
+        macho[4..8].copy_from_slice(&0_u32.to_le_bytes());
+        fs::write(&binary, macho).unwrap();
+        assert!(validate_binary(&binary, "macos", "aarch64").is_err());
         let mut elf = [0_u8; 20];
         elf[..6].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1]);
         elf[16..18].copy_from_slice(&3_u16.to_le_bytes());
