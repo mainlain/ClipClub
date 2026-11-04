@@ -96,7 +96,9 @@ async function recover(){
 $('connect').addEventListener('click',connect);$('deploy').addEventListener('click',deploy);$('recover').addEventListener('click',recover);
 $('download').addEventListener('click',()=>{if(!deploymentRecord)return;const url=URL.createObjectURL(new Blob([JSON.stringify(deploymentRecord,null,2)+'\n'],{type:'application/json'}));const anchor=document.createElement('a');anchor.href=url;anchor.download='joah-mainnet-deployment.json';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 function invalidateWallet(){account=null;estimatedGas=null;$('deployer').textContent='Connect again to confirm the selected wallet';$('wallet-gas').textContent='Connect to estimate';$('gas-cost').textContent='—';renderControls();if(!busy&&!deploymentRecord)show('The wallet account or network changed. Connect and review it again.');}
-if(provider()?.on){provider().on('accountsChanged',invalidateWallet);provider().on('chainChanged',invalidateWallet);}
+// Some injected wallet proxies throw when optional event APIs are accessed.
+// Deployment still rechecks the selected account and chain before sending.
+try{const wallet=provider(),on=wallet?.on;if(typeof on==='function'){on.call(wallet,'accountsChanged',invalidateWallet);on.call(wallet,'chainChanged',invalidateWallet);}}catch{}
 (async()=>{
   try{
     const response=await fetch('/api/deployment',{headers:{'x-deployment-token':token}});if(!response.ok)throw Error('Could not load the checked deployment. Restart the local review server.');

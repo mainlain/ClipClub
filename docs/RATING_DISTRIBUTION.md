@@ -1,6 +1,6 @@
 # Rating distribution design intent
 
-Updated on 2026-11-03. The selected curve in `src/rating_distribution.rs` is connected to local rating drafts and on-chain seeder settlement. The rater pays exactly the rating score in existing 좋아 tokens. Unused rating contributions carry forward as wallet-scoped credit. Settlement mints any reward shortfall remaining after that credit is used. Deployment remains on hold for final review; no live deployment or funding has been performed.
+Updated on 2026-11-04. The selected curve in `src/rating_distribution.rs` is connected to local rating drafts and on-chain seeder settlement. The rater pays exactly the rating score in existing 좋아 tokens. Unused rating contributions carry forward as wallet-scoped credit. Settlement mints any reward shortfall remaining after that credit is used. The token is deployed on MegaETH mainnet at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16); see [the verified deployment record](../contracts/mainnet-deployment.json).
 
 ## Selected curve
 

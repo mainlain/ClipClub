@@ -8,6 +8,9 @@
   "treasuryEns": null,
   "treasury": "0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637",
   "verifier": "0x7a53a6eFA81c426838fcf4824E6e207923969b36",
-  "deploymentStatus": "on_hold",
-  "deploymentHoldReason": "Local seeder distribution and automatic shortfall minting are integrated; awaiting final deployment review."
+  "deploymentStatus": "deployed",
+  "deploymentHoldReason": null,
+  "contractAddress": "0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16",
+  "transactionHash": "0x776686e41987d79d2eda546eab5c74e9fd38f3e6ad1678b1195194c87441211f",
+  "deploymentBlock": 31031878
 }

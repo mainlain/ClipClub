@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 const DRAND: &str = "https://api.drand.sh/v2/chains/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/rounds/";
 const GENESIS: u64 = 1692803367;
+const MAINNET_CONTRACT: &str = "0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16";
 // A full 1,000-seeder settlement includes both ERC-20 Transfer and SeederPaid
 // logs. Its canonical RPC receipt can exceed one megabyte.
 const MAX_RPC_RESPONSE_BYTES: usize = 4_000_000;
@@ -282,6 +283,13 @@ pub struct TransactionRequest {
     expected_rating_count: Option<usize>,
     expected_total_units: Option<String>,
 }
+fn selected_contract(chain_id: u64, configured: Option<&str>) -> Result<Option<String>> {
+    configured
+        .or_else(|| (chain_id == 4326).then_some(MAINNET_CONTRACT))
+        .filter(|value| !value.is_empty())
+        .map(address)
+        .transpose()
+}
 impl Crypto {
     pub async fn selected_wallet(&self) -> Option<String> {
         self.journal.lock().await.wallet.clone()
@@ -304,11 +312,12 @@ impl Crypto {
             ),
             _ => bail!("CLIPCLUB_MEGAETH_CHAIN_ID must be 4326 or 6343"),
         };
-        let contract = std::env::var("CLIPCLUB_JOAH_CONTRACT")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|v| address(&v))
-            .transpose()?;
+        let configured_contract = match std::env::var("CLIPCLUB_JOAH_CONTRACT") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let contract = selected_contract(chain_id, configured_contract.as_deref())?;
         let rpc = std::env::var("CLIPCLUB_MEGAETH_RPC_URL").unwrap_or_else(|_| public_rpc.into());
         let url = reqwest::Url::parse(&rpc).context("Invalid MegaETH RPC URL")?;
         ensure!(
@@ -341,7 +350,7 @@ impl Crypto {
     fn contract(&self) -> Result<&str> {
         self.contract
             .as_deref()
-            .context("Deploy 좋아 and set CLIPCLUB_JOAH_CONTRACT before using tokens")
+            .context("Set CLIPCLUB_JOAH_CONTRACT before using tokens on this network")
     }
     pub async fn wallet(&self) -> Result<String> {
         self.journal
@@ -3196,6 +3205,24 @@ mod tests {
             assert!(word_decimal(n).is_err());
         }
         assert_eq!(multiply_decimal("1234567", 9).unwrap(), "11111103");
+    }
+    #[test]
+    fn live_contract_defaults_only_to_mainnet_and_preserves_explicit_configuration() {
+        let deployed = "0x98d49dc44f1cbba5abef438985b20a729de4ab16";
+        let custom = "0xAB12345678901234567890123456789012345678";
+        assert_eq!(
+            selected_contract(4326, None).unwrap().as_deref(),
+            Some(deployed)
+        );
+        assert_eq!(selected_contract(6343, None).unwrap(), None);
+        for chain_id in [4326, 6343] {
+            assert_eq!(
+                selected_contract(chain_id, Some(custom)).unwrap(),
+                Some(custom.to_ascii_lowercase())
+            );
+            assert_eq!(selected_contract(chain_id, Some("")).unwrap(), None);
+            assert!(selected_contract(chain_id, Some("invalid")).is_err());
+        }
     }
     #[test]
     fn wallet_and_hash_inputs_are_strict() {

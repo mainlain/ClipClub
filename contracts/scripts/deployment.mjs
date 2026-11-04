@@ -13,6 +13,9 @@ const launch = JSON.parse(fs.readFileSync(path.join(root, 'mainnet-launch.json')
 if (launch.deploymentStatus === 'on_hold') throw Error(`Deployment is on hold: ${launch.deploymentHoldReason}`);
 const chainId = Number(process.env.MEGAETH_CHAIN_ID || launch.chainId);
 if (!chains[chainId]) throw Error('MEGAETH_CHAIN_ID must be 4326 or 6343.');
+if (chainId === launch.chainId && launch.deploymentStatus === 'deployed') {
+  throw Error(`This launch is already deployed at ${launch.contractAddress}. Use the existing contract; do not deploy it again.`);
+}
 if (chainId === 6343 && (!process.env.JOAH_TREASURY || !process.env.JOAH_GENESIS_SUPPLY)) {
   throw Error('For testnet, explicitly set JOAH_TREASURY and JOAH_GENESIS_SUPPLY (whole tokens, up to 6 decimals).');
 }

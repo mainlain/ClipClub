@@ -1,12 +1,12 @@
 # clipclub
 
-**The local seeder distribution and session payment integration is implemented; deployment remains on hold for final review.** Each eligible permanent seeder receives `rating × y(x) / 100` 좋아, rounded down to six decimals, using the selected normalized logistic curve. The rater pays exactly the rating score. Unused rating contributions carry forward as wallet-scoped credit, and settlement automatically mints any remaining reward shortfall. Rating payments never spend roll escrow.
+**좋아 is deployed on MegaETH mainnet at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16).** Each eligible permanent seeder receives `rating × y(x) / 100` 좋아, rounded down to six decimals, using the selected normalized logistic curve. The rater pays exactly the rating score. Unused rating contributions carry forward as wallet-scoped credit, and settlement automatically mints any remaining reward shortfall. Rating payments never spend roll escrow.
 
 The desktop app calculates rewards locally from registered permanent seeder wallets and a persistent 30-day active-peer population estimate, with **N ≥ 21**. Recipients and rewards are frozen when queued and settled together on-chain. See [rating distribution rules](docs/RATING_DISTRIBUTION.md) for the formula, eligibility, funding and trust model.
 
 A Rust desktop app for sharing short videos through BitTorrent and paying with **좋아 (✨)**, its Ethereum-compatible ERC-20 token on **MegaETH**. The token uses six decimals and a fireworks logo. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 
-Token balances and payments live on MegaETH. Rolls commit to a future drand quicknet round and settle through MegaETH’s deployed verifier. The source includes the contracts and deployment tools. The selected launch configuration is MegaETH mainnet, an initial supply of 1,000,000,000 ✨, and treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. The contract address is filled after the wallet signs deployment. Until configured, sharing and free skips work while token actions remain disabled.
+Token balances and payments live on MegaETH. Rolls commit to a future drand quicknet round and settle through MegaETH’s deployed verifier. The source includes the contracts and deployment tools. The mainnet deployment created an initial supply of 1,000,000,000 ✨ for treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. The app defaults to the deployed mainnet contract. Token actions require your wallet approval; sharing and free skips work without a wallet.
 
 ## Run
 
@@ -67,24 +67,17 @@ The validator has a timeout, bounded output and allocation settings, a demuxer a
 
 The name is **좋아**, the ERC-20 symbol is **✨**, and the logo is the [multicolor fireworks image](assets/fireworks.png), shared with the desktop icon. A [256×256 PNG](assets/joah-256.png) is available for token lists and wallets. Explorer-specific sizes and export instructions are in [the asset guide](assets/README.md). One token is 1,000,000 base units. Every monetary API uses decimal integer strings; neither JavaScript numbers nor floating-point JSON amounts determine balances or payouts.
 
-The wallet deployment review can be opened with:
+The [mainnet deployment transaction](https://mega.etherscan.io/tx/0x776686e41987d79d2eda546eab5c74e9fd38f3e6ad1678b1195194c87441211f) was included in block **31,031,878** on 2026-11-04. Its full initcode, token metadata, immutable verifier and genesis mint to the selected treasury were independently checked through the mainnet RPC. The public record is in [contracts/mainnet-deployment.json](contracts/mainnet-deployment.json). Deployment commands reject a second deployment of this launch.
 
-```sh
-npm --prefix contracts run deployment
-npm --prefix contracts run deploy:wallet
-```
-
-The first command prepares and estimates the selected mainnet launch without sending it. The second serves a local page that checks its compiled bytecode, treasury, supply, and chain before your browser wallet signs. Your wallet may pay gas from a different address; all initial tokens go to the selected treasury. The page displays the resulting token address and app launch command after successful inclusion.
-
-Start with [contract setup, tests, and deployment](contracts/README.md). Then launch the app with the deployed address:
+Open the app normally to use the deployed mainnet token. You can also select the address explicitly:
 
 ```sh
 CLIPCLUB_MEGAETH_CHAIN_ID=4326 \
-CLIPCLUB_JOAH_CONTRACT=0xYourDeployedJoahAddress \
-./target/debug/clipclub
+CLIPCLUB_JOAH_CONTRACT=0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16 \
+./dist/clipclub
 ```
 
-`6343` selects MegaETH testnet; `4326` selects mainnet, the project default. The default RPCs are `https://carrot.megaeth.com/rpc` and `https://mainnet.megaeth.com/rpc`. `CLIPCLUB_MEGAETH_RPC_URL` optionally selects a trusted HTTPS RPC. The app checks its chain ID. The wallet adds the official public RPC; custom backend credentials are never sent to the UI. All peers that exchange paid ratings must configure the same chain and contract. There are no embedded keys, API subscriptions, or automatically funded wallets.
+`6343` selects MegaETH testnet; `4326` selects mainnet, the project default. Testnet requires an explicit contract address and never inherits the mainnet token. Set `CLIPCLUB_JOAH_CONTRACT` to an empty string to disable token configuration. The default RPCs are `https://carrot.megaeth.com/rpc` and `https://mainnet.megaeth.com/rpc`. `CLIPCLUB_MEGAETH_RPC_URL` optionally selects a trusted HTTPS RPC. The app checks its chain ID. The wallet adds the official public RPC; custom backend credentials are never sent to the UI. All peers that exchange paid ratings must configure the same chain and contract. There are no embedded keys, API subscriptions, or automatically funded wallets.
 
 The native WebView usually has no Ethereum wallet provider. Choose **Open wallet browser** to open this process’s local interface in a browser with an EIP-1193 wallet. Connect there, then approve transactions in that wallet. The app checks the account, target contract, chain, and zero ETH transaction value before asking the wallet to sign. ETH on the selected network pays gas. MegaETH RPC simulation and wallet fee estimation use the actual network; no Ethereum gas constants are hardcoded.
 

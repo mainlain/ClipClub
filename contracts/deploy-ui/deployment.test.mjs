@@ -24,9 +24,10 @@ const review=await loadReview({deploymentPath,artifactPath});
 const source=fs.readFileSync(path.join(root,'deploy-ui/deploy.js'),'utf8');
 const html=fs.readFileSync(path.join(root,'deploy-ui/index.html'),'utf8');
 const hash='0x'+'a'.repeat(64),deployer='0x1111111111111111111111111111111111111111',contract='0x4444444444444444444444444444444444444444';
-function fixture(){
+function fixture({configureWallet}={}){
   const elements=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{value:'',textContent:'',disabled:false,hidden:false,listeners:{},classList:{toggle(){}},addEventListener(name,fn){this.listeners[name]=fn;}}]));
   const calls=[];const wallet={async request(request){calls.push(request);switch(request.method){case 'eth_accounts':case 'eth_requestAccounts':return [deployer];case 'eth_chainId':return '0x10e6';case 'eth_estimateGas':return '0x3938700';case 'eth_gasPrice':return '0x1';case 'eth_sendTransaction':return hash;case 'eth_getTransactionReceipt':return {status:'0x1',contractAddress:contract,blockNumber:'0x123'};case 'eth_getTransactionByHash':return {from:deployer,to:null,input:review.unsignedTransaction.data,value:'0x0',chainId:'0x10e6'};default:throw Error(request.method);}}};
+  configureWallet?.(wallet);
   const context=vm.createContext({document:{getElementById:id=>elements.get(id),querySelector:()=>({content:'token'})},window:{ethereum:wallet,localStorage:{getItem(){return null;},setItem(){},removeItem(){}}},fetch:async()=>({ok:true,json:async()=>review}),setTimeout(){}});
   vm.runInContext(source,context);return {calls,elements,wallet,run:code=>vm.runInContext(code,context)};
 }
@@ -72,6 +73,23 @@ test('opening the page never requests accounts or signs; the deployer estimate u
   await app.run('connect()');assert.equal(app.elements.get('deployer').textContent,deployer);
   const estimates=app.calls.filter(call=>call.method==='eth_estimateGas');assert.equal(estimates.length,1);assert.equal(estimates[0].params[0].from,deployer);assert.notEqual(deployer,review.treasury);
   assert.equal(app.calls.filter(call=>call.method==='eth_sendTransaction').length,0);
+});
+test('a throwing optional wallet event getter does not block review loading or connection',async()=>{
+  const app=fixture({configureWallet(wallet){Object.defineProperty(wallet,'on',{get(){throw new TypeError('Injected wallet proxy cannot expose on.');}});}});
+  await ready(app);
+  assert.equal(app.elements.get('treasury').textContent,treasury);
+  assert.match(app.elements.get('status').textContent,/Deployment checked/);
+  assert.equal(app.elements.get('connect').disabled,false);
+  assert.equal(app.calls.length,0);
+  await app.run('connect()');
+  assert.equal(app.elements.get('deployer').textContent,deployer);
+  assert.equal(app.calls.filter(call=>call.method==='eth_estimateGas').length,1);
+  assert.equal(app.elements.get('deploy').disabled,false);
+  const original=app.wallet.request;
+  app.wallet.request=async request=>request.method==='eth_accounts'?[contract]:original(request);
+  await app.run('deploy()');
+  assert.equal(app.calls.filter(call=>call.method==='eth_sendTransaction').length,0);
+  assert.match(app.elements.get('status').textContent,/selected wallet changed/);
 });
 test('only explicit deployment sends once with reviewed creation data and shows its receipt',async()=>{
   const app=fixture();await ready(app);await app.run('connect()');await app.run('deploy()');await app.run('deploy()');

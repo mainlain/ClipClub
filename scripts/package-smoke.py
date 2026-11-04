@@ -27,6 +27,8 @@ environment = dict(os.environ)
 environment.pop('CLIPCROP_FFPROBE', None)
 for key in ('CLIPCLUB_MEGAETH_CHAIN_ID', 'CLIPCLUB_JOAH_CONTRACT', 'CLIPCLUB_MEGAETH_RPC_URL'):
     environment.pop(key, None)
+# Exercise the explicit offline mode without depending on the live token RPC.
+environment['CLIPCLUB_JOAH_CONTRACT'] = ''
 with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
     profile = Path(folder) / 'profile'
     saved_identity = None

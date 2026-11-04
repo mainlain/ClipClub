@@ -1,0 +1,36 @@
+{
+  "chainId": 4326,
+  "name": "좋아",
+  "symbol": "✨",
+  "decimals": 6,
+  "treasury": "0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637",
+  "genesisSupplyBaseUnits": "1000000000000000",
+  "verifier": "0x7a53a6eFA81c426838fcf4824E6e207923969b36",
+  "contractAddress": "0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16",
+  "transactionHash": "0x776686e41987d79d2eda546eab5c74e9fd38f3e6ad1678b1195194c87441211f",
+  "deployer": "0x81cE179794FFb22Ea5fDDeD58aD4DDC1812ce478",
+  "blockNumber": 31031878,
+  "blockHash": "0xe3fd3a0df7a86a3582f2ffebbb9b0774cb93a1a76a6c2ca126d1d6f2ab158541",
+  "bytecodeHash": "0x9362f8c35d4ec57247ff23c2b6098474faec88e3e6e9a93f4be596a5456ca103",
+  "runtimeBytecodeHash": "0x611bf23a7b6b22d27d7590d103f85ed74a2bb7b54ae728cc9b88c7bdd90f3ce2",
+  "gasUsed": "97030922",
+  "feeWei": "97030922000000",
+  "verifiedAt": "2026-11-04T21:49:06.006Z",
+  "confirmation": "Canonical MegaETH inclusion verified; not Ethereum L1 finality.",
+  "sourceVerification": {
+    "sourcify": {
+      "url": "https://repo.sourcify.dev/4326/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16",
+      "creationMatch": "exact_match",
+      "runtimeMatch": "exact_match",
+      "verifiedAt": "2026-11-04T21:50:20Z"
+    },
+    "blockscout": {
+      "url": "https://megaeth.blockscout.com/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16?tab=contract",
+      "status": "Pass - Verified"
+    },
+    "etherscan": {
+      "url": "https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16#code",
+      "status": "Contract Source Code Verified (Exact Match)"
+    }
+  }
+}

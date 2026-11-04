@@ -90,10 +90,11 @@ inside ClipClub's Rust application or is used to hold wallet keys.
 
 ## Prepare and deploy
 
-**Distribution integration is implemented; deployment remains on hold for final review.** `mainnet-launch.json` records the hold, and preparation and preview commands stop before proceeding. The genesis supply goes to the treasury; seeder reward shortfalls are minted automatically during session settlement.
+**좋아 was deployed on MegaETH mainnet on 2026-11-04 at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16).** [Transaction `0x776686e4…441211f`](https://mega.etherscan.io/tx/0x776686e41987d79d2eda546eab5c74e9fd38f3e6ad1678b1195194c87441211f) was included in block 31,031,878. Full initcode, canonical inclusion, token metadata, immutable verifier and the genesis mint were independently checked through the public mainnet RPC. See [the public deployment record](mainnet-deployment.json).
 
-No contract has been deployed by this change. A funded MegaETH wallet is needed
-for deployment, seeder registration, ratings, requests, and reveal transactions.
+`mainnet-launch.json` records the deployed configuration. Deployment commands reject a second deployment of this launch. The genesis supply went to the treasury; seeder reward shortfalls are minted automatically during session settlement. A funded MegaETH wallet is needed for seeder registration, ratings, requests, and reveal transactions.
+
+Source verification has exact creation and runtime matches on [Sourcify](https://repo.sourcify.dev/4326/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16), an exact source match on [Mega Etherscan](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16#code), and verified status on [MegaETH Blockscout](https://megaeth.blockscout.com/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16?tab=contract). The compiler is Solidity `v0.8.30+commit.73712a01`, with optimizer 200 runs and Shanghai EVM target.
 
 | Network | Chain ID | RPC | Immutable verifier |
 | --- | ---: | --- | --- |
@@ -109,8 +110,7 @@ The selected launch in tracked `mainnet-launch.json` is **MegaETH mainnet
 **`0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`**. The recipient is the
 explicit wallet address selected for this launch; no ENS resolution is used.
 
-Prepare this unsigned mainnet deployment with a remote gas estimate and 20%
-margin, then open the local wallet review page:
+The completed mainnet launch used these commands to prepare unsigned initcode with a remote gas estimate and 20% margin, then open the local wallet review page. They now reject repeating the deployed launch:
 
 ```sh
 npm run deployment

@@ -25,6 +25,8 @@ PROCESSES = []
 ENVIRONMENT = dict(os.environ)
 for key in ('CLIPCLUB_MEGAETH_CHAIN_ID', 'CLIPCLUB_JOAH_CONTRACT', 'CLIPCLUB_MEGAETH_RPC_URL'):
     ENVIRONMENT.pop(key, None)
+# Keep peer/media integration independent of the deployed token and public RPC.
+ENVIRONMENT['CLIPCLUB_JOAH_CONTRACT'] = ''
 
 def free_port():
     with socket.socket() as stream:

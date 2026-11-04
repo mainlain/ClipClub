@@ -60,6 +60,7 @@ export function createReviewServer(review,{sessionToken=randomBytes(32).toString
 async function main(){
   const launch=JSON.parse(fs.readFileSync(path.join(root,'mainnet-launch.json'),'utf8'));
   if(launch.deploymentStatus==='on_hold')throw Error(`Deployment is on hold: ${launch.deploymentHoldReason}`);
+  if(launch.deploymentStatus==='deployed')throw Error(`This launch is already deployed at ${launch.contractAddress}. Use the existing contract; do not deploy it again.`);
   const review=await loadReview();
   const session=createReviewServer(review);
   session.server.listen(0,'127.0.0.1',()=>{
