@@ -2,6 +2,8 @@
 
 **Deployment is on hold while the rating distribution formula is reconsidered.** The current token code still pays the registered clip wallet; no replacement formula or funding rule has been selected. The deployment preparation and preview commands respect the hold recorded in `contracts/mainnet-launch.json`.
 
+The intended population input **N** estimates the monthly active user base, with a minimum of 20. Its definition and the gap from the current implementation are recorded in [rating distribution design intent](docs/RATING_DISTRIBUTION.md) for the later formula replacement.
+
 A Rust desktop app for sharing short videos through BitTorrent and paying with **좋아 (✨)**, its Ethereum-compatible ERC-20 token on **MegaETH**. The token uses six decimals and a fireworks logo. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 
 Token balances and payments live on MegaETH. Rolls commit to a future drand quicknet round and settle through MegaETH’s deployed verifier. The source includes the contracts and deployment tools. The selected launch configuration is MegaETH mainnet, an initial supply of 1,000,000,000 ✨, and treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. The contract address is filled after the wallet signs deployment. Until configured, sharing and free skips work while token actions remain disabled.

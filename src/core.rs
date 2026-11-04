@@ -276,7 +276,10 @@ pub struct RatingPayload {
     pub score: u8,
     /// Sorted, distinct permanent seeders seen by the rater at rating time.
     pub seeders: Vec<String>,
-    /// Observed peers including the rater, with a minimum of three.
+    /// Currently observed peers including the rater, with a minimum of three.
+    /// Intended future N estimates monthly active peer identities with a
+    /// minimum of twenty; that estimate and minimum are not implemented. See
+    /// docs/RATING_DISTRIBUTION.md for the population definition and deferred work.
     pub total_users: usize,
     pub sequence: u64,
     pub previous: Option<String>,
@@ -399,8 +402,10 @@ fn receipt_bytes(payload: &RatingPayload) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Each seeder receives this amount. Rewards intentionally create new points
-/// when there are multiple seeders; they are not split between seeders.
+/// Legacy points calculation retained for saved history. Each seeder receives
+/// this amount; multiple seeders create points rather than splitting a pool.
+/// This curve is pending replacement. The intended future population input N
+/// is documented in docs/RATING_DISTRIBUTION.md; it is not implemented here.
 pub fn reward_micropoints(score: u8, seeders: usize, total_users: usize) -> Result<u64> {
     ensure!(score <= 9, "Rating must be between 0 and 9");
     let population = total_users.max(3);
