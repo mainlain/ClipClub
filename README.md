@@ -1,8 +1,8 @@
 # clipclub
 
-**Deployment is on hold while the rating distribution formula is reconsidered.** The current token code still pays the registered clip wallet; no replacement formula or funding rule has been selected. The deployment preparation and preview commands respect the hold recorded in `contracts/mainnet-launch.json`.
+**Deployment remains on hold pending integration of the selected rating distribution curve.** The selected rule gives each permanent seeder `rating × y(x) / 100` points, with the normalized logistic curve returning 100 for one seeder and 1 when the seeder count equals **N**. The amount is calculated per seeder, without dividing by the seeder count, and floored to six decimal places. Seeder funding and payment recipient integration remain pending; the current token code still pays the registered clip wallet. The deployment preparation and preview commands respect the hold recorded in `contracts/mainnet-launch.json`.
 
-The intended population input **N** estimates the monthly active user base, with a minimum of 20. Its definition and the gap from the current implementation are recorded in [rating distribution design intent](docs/RATING_DISTRIBUTION.md) for the later formula replacement.
+The intended population input **N** estimates the monthly active user base. The selected curve requires **N > 20**, so the integer minimum is 21, superseding the earlier minimum of 20. The curve and per-seeder reward are implemented as tested pure helpers; archived points and active token payments retain their existing calculations. See [rating distribution design intent](docs/RATING_DISTRIBUTION.md) for the formula, population definition, and remaining integration work.
 
 A Rust desktop app for sharing short videos through BitTorrent and paying with **좋아 (✨)**, its Ethereum-compatible ERC-20 token on **MegaETH**. The token uses six decimals and a fireworks logo. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 

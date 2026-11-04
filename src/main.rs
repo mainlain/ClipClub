@@ -8,6 +8,7 @@ mod crypto;
 mod http;
 mod media;
 mod peer;
+pub mod rating_distribution;
 mod torrent;
 mod update;
 mod update_install;
