@@ -25,10 +25,11 @@ def port():
 binary = Path(sys.argv[1]).resolve(strict=True)
 environment = dict(os.environ)
 environment.pop('CLIPCROP_FFPROBE', None)
+for key in ('CLIPCLUB_MEGAETH_CHAIN_ID', 'CLIPCLUB_JOAH_CONTRACT', 'CLIPCLUB_MEGAETH_RPC_URL'):
+    environment.pop(key, None)
 with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
     profile = Path(folder) / 'profile'
     saved_identity = None
-    saved_balance = 100
     for attempt in range(2):
         http_port = port()
         log = open(Path(folder) / f'launch-{attempt}.log', 'w+')
@@ -63,7 +64,13 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
                     return json.loads(response.read())
 
             state = request('state')
-            assert state['balance'] == saved_balance
+            crypto = state['crypto']
+            assert crypto['chain_id'] == 4326 and not crypto['configured']
+            assert crypto['name'] == '좋아' and crypto['symbol'] == '✨' and crypto['decimals'] == 6
+            assert crypto['balance_units'] == crypto['total_supply_units'] == '0'
+            assert crypto['wallet'] is None and crypto['contract'] is None
+            assert 'balance' not in state, 'Legacy points were exposed as token balance'
+            assert state['roll'] is None
             assert 'data-page="home"' in html
             assert 'id="library-sort"' in html and 'id="roll-wager"' in html
             assert 'id="install-update"' in html and 'id="check-updates"' in html
@@ -82,24 +89,22 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
                 settings = state['settings']
                 settings['display_name'] = 'Package Smoke Check'
                 request('settings', settings)
-                rolled = request('roll', {'wager': 1})
-                multiplier = rolled['multiplier']
-                assert isinstance(multiplier, int) and 0 <= multiplier <= 9
-                assert rolled['wager'] == 1 and rolled['payout'] == multiplier
-                saved_balance = 99 + multiplier
-                assert rolled['balance'] == saved_balance
-                receipt = json.loads((profile / 'state.json').read_text())['receipts'][-1]
-                assert receipt['id'] == rolled['id']
-                assert receipt['payload']['roll']['wager_micropoints'] == 1000000
             else:
                 assert state['profile_id'] == saved_identity
                 assert state['settings']['display_name'] == 'Package Smoke Check'
+            for payload in ({'wager':1}, {'wager':1,'multiplier':9}, {'transaction_hash':'invalid'}):
+                try:
+                    request('roll', payload)
+                    raise AssertionError('Local or client-selected roll was accepted')
+                except urllib.error.HTTPError as error:
+                    assert error.code in (400, 422)
             try:
-                request('roll', {'wager': 1, 'multiplier': 9})
-                raise AssertionError('Client-selected multiplier was accepted')
+                request('rate', {'id':'0' * 64, 'score':5})
+                raise AssertionError('Paid rating without chain payment was accepted')
             except urllib.error.HTTPError as error:
                 assert error.code in (400, 422)
-            assert request('state')['balance'] == saved_balance
+            assert request('state')['crypto']['balance_units'] == '0'
+            assert not json.loads((profile / 'state.json').read_text())['receipts']
         finally:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
@@ -109,4 +114,4 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
                     process.kill()
                     process.wait()
             log.close()
-print('PASS: compact menu, library sorting, signed Roll payout, 100-point start, embedded validator, identity/settings/balance persistence; temporary profiles removed.')
+print('PASS: compact menu, library sorting, 좋아 metadata, default MegaETH mainnet, zero token grants, no local RNG rolls or unpaid positive ratings, embedded validator, identity/settings persistence; temporary profiles removed.')

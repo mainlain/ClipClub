@@ -1,0 +1,22 @@
+{
+  "name": "joah-megaeth-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/joah.test.mjs deploy-ui/deployment.test.mjs",
+    "deployment": "node scripts/deployment.mjs",
+    "check:verifier": "node scripts/check-verifier.mjs",
+    "deploy:wallet": "node scripts/deploy-server.mjs",
+    "deploy:review": "node scripts/deploy-server.mjs"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.4.0"
+  },
+  "devDependencies": {
+    "ethers": "6.15.0",
+    "ganache": "7.9.2",
+    "solc": "0.8.30"
+  }
+}

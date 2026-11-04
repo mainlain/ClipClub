@@ -37,7 +37,14 @@ if command -v node >/dev/null 2>&1; then
   while IFS= read -r -d '' script; do
     node --check "$script"
   done < <(find ui -type f -name '*.js' -print0)
-  node --test scripts/library.test.cjs scripts/roll.test.cjs scripts/navigation.test.cjs scripts/update.test.cjs
+  node --test scripts/library.test.cjs scripts/roll.test.cjs scripts/session.test.cjs scripts/navigation.test.cjs scripts/update.test.cjs
+fi
+
+if [[ -d contracts/node_modules ]] && command -v npm >/dev/null 2>&1; then
+  npm --prefix contracts run build
+  npm --prefix contracts test
+else
+  printf 'Contract checks require Node and npm ci --prefix contracts.\n' >&2
 fi
 
 printf 'Checks completed.\n'

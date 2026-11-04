@@ -24,12 +24,11 @@ a { color: inherit; text-decoration: none; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-size: 21px; letter-spacing: -.9px; font-weight: 650; }
 .brandmark { width: 27px; height: 28px; background: var(--orange); color: white; display: inline-flex; justify-content: center; align-items: center; border-radius: 6px; font: italic 25px Georgia; letter-spacing: -5px; padding-right: 5px; }
 .brandmark span { transform: rotate(180deg); display: inline-block; }
-.points { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; }
 .balance-label { font-size: 8px; letter-spacing: 1.3px; color: var(--muted); }
 .balance { font-size: 20px; line-height: 1.2; font-weight: 500; letter-spacing: -.7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
 .balance span { color: var(--muted); font-size: 14px; font-weight: 400; }
 main { flex: 1; width: 100%; max-width: 1080px; margin: 0 auto; padding: 10px 28px 28px; min-width: 0; }
-body[data-page="home"] main { display: flex; flex-direction: column; justify-content: center; max-width: 480px; padding-top: 24px; padding-bottom: 38px; }
+body[data-page="home"] main { display: flex; flex-direction: column; justify-content: center; max-width: 480px; padding-top: 24px; padding-bottom: 21px; }
 body[data-page="home"] .screen-bar { display: none; }
 .home-page h1 { color: var(--muted); font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 1.3px; text-transform: uppercase; margin: 0 0 18px 1px; }
 .main-menu { display: flex; flex-direction: column; gap: 10px; }
@@ -229,3 +228,49 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }
 }
+.wallet-header { display: flex; align-items: center; gap: 11px; }
+.token-logo { flex-shrink: 0; border-radius: 9px; }
+.token-balance { min-width: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.wallet-header .button { font-size: 10px; padding: 9px 11px; margin-left: 7px; }
+.economy-intro { display: flex; gap: 14px; align-items: center; margin: 0 0 20px; }
+.economy-intro strong { font-size: 27px; letter-spacing: -.8px; font-weight: 600; }
+.economy-intro strong span { font-size: 22px; }
+.economy-intro p { margin: 6px 0 0; font-size: 11px; }
+.wallet-settings { max-width: 720px; }
+.wallet-settings h2 { display: flex; gap: 10px; align-items: center; }
+.wallet-settings .about-grid { margin: 18px 0; }
+#crypto-contract, #crypto-wallet { color: var(--green); overflow-wrap: anywhere; }
+#settle-roll { width: 100%; margin-top: 15px; }
+.proof-links { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 17px; font-size: 10px; color: var(--green); }
+.proof-links a { border-bottom: 1px solid var(--line); padding-bottom: 3px; overflow-wrap: anywhere; }
+.proof-links a:hover { color: var(--orange); }
+.transaction-recovery { margin: 22px 0; }
+.transaction-recovery .button { margin-top: 10px; }
+.pending-transaction { margin-top: 20px; padding: 13px; background: #eef0e6; border: 1px solid var(--line); border-radius: 5px; overflow-wrap: anywhere; }
+.pending-transaction p { margin-top: 0; }
+.registered-token { font-size: 10px; align-self: center; color: var(--green); }
+@media (max-width: 590px) {
+  .app-header { align-items: flex-start; gap: 12px; }
+  .wallet-header { flex-wrap: wrap; justify-content: flex-end; gap: 7px; max-width: 58%; }
+  .wallet-header .token-logo { width: 25px; height: 25px; }
+  .wallet-header .button { flex-basis: 100%; margin: 2px 0 0; }
+  .balance { font-size: 17px; }
+  .row-actions { flex-wrap: wrap; justify-content: flex-end; }
+}
+.rating-recipient { margin: 10px 0 0; overflow-wrap: anywhere; }
+
+.reserved-balance { font-size: 9px; color: var(--muted); text-align: right; line-height: 1.5; overflow-wrap: anywhere; }
+.rating-session-card { padding: 17px; border: 1px solid #cbd8bf; border-radius: 5px; background: #edf2e6; margin-bottom: 24px; }
+.rating-session-card h2 { font-size: 13px; margin: 0; font-weight: 500; }
+.rating-session-card .section-line > span { text-align: right; font-size: 9px; letter-spacing: 0; }
+.rating-session-card .session-total { font-size: 16px; color: var(--ink); margin: 13px 0 5px; }
+.rating-session-card .field-help { margin: 7px 0; }
+.session-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 15px; margin-top: 16px; }
+.rating-session-card details > summary { font-size: 10px; }
+#rating-session-items { list-style: none; padding: 0; margin: 13px 0; max-height: 150px; overflow: auto; }
+#rating-session-items li { display: flex; align-items: baseline; gap: 18px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 10px; }
+#rating-session-items .session-item-title { flex: 1; overflow-wrap: anywhere; font-size: 9px; }
+#rating-session-items li span { white-space: nowrap; }
+.session-recovery { margin-top: 16px; }
+.session-recovery .button { margin-top: 10px; }
+#rating-session-error { color: #a34427; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }

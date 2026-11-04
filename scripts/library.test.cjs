@@ -26,9 +26,9 @@ function interfaceFixture() {
     FormData:class FormData {}, setTimeout(){}, clearTimeout(){}, setInterval(){},
   });
   vm.runInContext(source, context);
-  const row = (id, added, points, rating, count) => ({
+  const row = (id, added, legacyPoints, rating, count) => ({
     clip:{id, title:id, extension:'mp4', duration_secs:3, width:100, height:100, size:1000},
-    seeding:true, added_at_ms:added, points_earned:points, average_rating:rating, rating_count:count,
+    seeding:true, added_at_ms:added, legacy_points_earned:legacyPoints, average_rating:rating, rating_count:count,
   });
   context.fixture = [
     row('popular', 200, 30, 3, 10), row('quality', 100, 4, 8, 1),
@@ -42,12 +42,11 @@ function order(element) {
   return [...element.innerHTML.matchAll(/data-preview="([^"]+)"/g)].map(([, id]) => id);
 }
 
-test('library sorts independently by recency, points and average rating', () => {
+test('library sorts independently by recency and average rating', () => {
   const app = interfaceFixture();
   const original = JSON.stringify(app.context.fixture);
   for (const [sort, expected] of [
     ['recency', ['new', 'tied', 'popular', 'quality', 'legacy']],
-    ['points', ['popular', 'tied', 'quality', 'new', 'legacy']],
     ['rating', ['tied', 'quality', 'popular', 'new', 'legacy']],
   ]) {
     app.elements.get('library-sort').value = sort;
@@ -77,7 +76,8 @@ test('refresh keeps the selected sort and updates scores without confusing unrat
   assert.match(app.elements.get('library').innerHTML, /8\.0 \/ 9<\/strong> · 1 rating</);
   assert.match(app.elements.get('library').innerHTML, /8\.0 \/ 9<\/strong> · 2 ratings</);
   assert.match(app.elements.get('library').innerHTML, /Unrated/);
-  assert.match(app.elements.get('library').innerHTML, /30\.00<\/strong> points earned/);
+  assert.doesNotMatch(app.elements.get('library').innerHTML, /points earned|legacy_points_earned/);
+  assert.match(app.elements.get('library').innerHTML, /Register ✨ wallet/);
   app.context.fixture[2].average_rating = 9;
   app.context.fixture[2].rating_count = 1;
   app.render();
@@ -92,6 +92,7 @@ test('empty library renders and titles stay escaped', () => {
   app.render();
   assert.match(app.elements.get('library').innerHTML, /&lt;img/);
   assert.doesNotMatch(app.elements.get('library').innerHTML, /<img/);
+  assert.doesNotMatch(app.elements.get('library').innerHTML, /points earned/);
   vm.runInContext('state.library=[];', app.context);
   app.render();
   assert.match(app.elements.get('library').innerHTML, /No clips yet/);

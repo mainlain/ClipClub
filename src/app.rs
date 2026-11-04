@@ -1,8 +1,6 @@
 use crate::{
-    core::{
-        Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, MAX_ROLL_WAGER_MICROPOINTS, MICROS_PER_POINT,
-        RatingReceipt, Settings, Store, roll_multiplier,
-    },
+    core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Settings, Store},
+    crypto::{ChainRoll, Crypto},
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
     torrent::{self, PreparedTorrent, TorrentEngine},
@@ -27,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 pub struct App {
     pub root: PathBuf,
     pub store: Mutex<Store>,
+    pub crypto: Crypto,
     pub mesh: PeerHandle,
     identity: Keypair,
     engine: TorrentEngine,
@@ -51,11 +50,8 @@ struct Presence {
 }
 #[derive(Clone, Serialize)]
 struct RollResult {
-    id: String,
-    multiplier: u8,
-    wager: f64,
-    payout: f64,
-    balance: f64,
+    #[serde(flatten)]
+    chain: ChainRoll,
     clip: Option<Clip>,
     message: Option<String>,
 }
@@ -66,8 +62,16 @@ struct RollClip {
     peers: Vec<SocketAddr>,
 }
 
+struct VerifiedRatingGroup {
+    ratings: BTreeMap<String, u8>,
+    checked_at: Instant,
+}
+
 #[derive(Default)]
 struct Runtime {
+    rating_proofs: BTreeMap<String, VerifiedRatingGroup>,
+    beneficiaries: BTreeMap<String, String>,
+    beneficiaries_at: Option<Instant>,
     peers: BTreeMap<String, Presence>,
     addresses: BTreeSet<String>,
     ready: VecDeque<String>,
@@ -83,23 +87,6 @@ struct Runtime {
     roll: Option<RollResult>,
     roll_cancel: Option<CancellationToken>,
     roll_file: Option<String>,
-}
-
-fn wager_micropoints(wager: f64) -> Result<u64> {
-    let scaled = wager * MICROS_PER_POINT as f64;
-    ensure!(
-        wager.is_finite() && wager > 0.0 && scaled >= 1.0,
-        "Wager at least 0.000001 points"
-    );
-    ensure!(
-        scaled < MAX_ROLL_WAGER_MICROPOINTS as f64,
-        "Wager is too large"
-    );
-    ensure!(
-        (scaled - scaled.round()).abs() <= 0.000001,
-        "Use at most six decimal places for your wager"
-    );
-    Ok(scaled.round() as u64)
 }
 
 fn roll_rating(average: f64) -> u8 {
@@ -150,6 +137,7 @@ impl App {
         .await?;
         let app = Arc::new(Self {
             updates: Arc::new(crate::update::Updater::new(root.clone())),
+            crypto: Crypto::open(&root)?,
             root,
             store: Mutex::new(store),
             mesh,
@@ -352,6 +340,23 @@ impl App {
                 }
             }
             PeerEvent::Receipt(receipt) => {
+                if self
+                    .store
+                    .lock()
+                    .await
+                    .data
+                    .receipts
+                    .iter()
+                    .any(|r| r.id == receipt.id)
+                {
+                    return;
+                }
+                // Gossip can describe a payment, but cannot authorize or fabricate one.
+                if let Some(payment) = &receipt.payload.payment
+                    && self.verify_peer_rating(&receipt, payment).await.is_err()
+                {
+                    return;
+                }
                 let mut store = self.store.lock().await;
                 match store.apply_receipt(receipt.clone()) {
                     Ok(true) => {
@@ -385,41 +390,163 @@ impl App {
         drop(store);
         self.runtime.lock().await.pending.extend(pending);
     }
-    pub async fn state(&self) -> Value {
+    async fn verify_peer_rating(
+        &self,
+        receipt: &RatingReceipt,
+        payment: &crate::core::ChainPayment,
+    ) -> Result<()> {
+        // Share one canonical proof among a batch's gossip receipts. User
+        // checkout always verifies a fresh receipt through session_payment.
+        let key = json!([
+            payment.chain_id,
+            payment.contract.to_ascii_lowercase(),
+            payment.transaction_hash.to_ascii_lowercase(),
+            payment.wallet.to_ascii_lowercase(),
+            receipt.payload.sender
+        ])
+        .to_string();
+        {
+            let mut rt = self.runtime.lock().await;
+            rt.rating_proofs
+                .retain(|_, proof| proof.checked_at.elapsed() < Duration::from_secs(30));
+            if let Some(proof) = rt.rating_proofs.get(&key) {
+                ensure!(
+                    proof.ratings.get(&receipt.payload.clip_id) == Some(&receipt.payload.score),
+                    "Rating disagrees with the verified payment"
+                );
+                return Ok(());
+            }
+        }
+        let ratings = self
+            .crypto
+            .verify_rating_group(payment, &receipt.payload.sender)
+            .await?;
+        ensure!(
+            ratings.get(&receipt.payload.clip_id) == Some(&receipt.payload.score),
+            "Rating disagrees with the verified payment"
+        );
+        let mut rt = self.runtime.lock().await;
+        if rt.rating_proofs.len() >= 32 {
+            if let Some(oldest) = rt
+                .rating_proofs
+                .iter()
+                .min_by_key(|(_, proof)| proof.checked_at)
+                .map(|(key, _)| key.clone())
+            {
+                rt.rating_proofs.remove(&oldest);
+            }
+        }
+        rt.rating_proofs.insert(
+            key,
+            VerifiedRatingGroup {
+                ratings,
+                checked_at: Instant::now(),
+            },
+        );
+        Ok(())
+    }
+    pub async fn state(self: &Arc<Self>) -> Value {
+        let mut crypto = self.crypto.state().await;
+        if crypto["configured"] == true && crypto["error"].is_null() {
+            let store = self.store.lock().await;
+            let rt = self.runtime.lock().await;
+            let ids: Vec<String> = store
+                .data
+                .library
+                .keys()
+                .cloned()
+                .chain(rt.ready.iter().cloned())
+                .collect();
+            let refresh = rt
+                .beneficiaries_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+            drop(rt);
+            drop(store);
+            if refresh {
+                let mut beneficiaries = BTreeMap::new();
+                let mut succeeded = true;
+                for chunk in ids.chunks(100) {
+                    match self.crypto.beneficiaries(chunk).await {
+                        Ok(values) => beneficiaries.extend(values),
+                        Err(_) => {
+                            succeeded = false;
+                            break;
+                        }
+                    }
+                }
+                if succeeded {
+                    let mut rt = self.runtime.lock().await;
+                    rt.beneficiaries = beneficiaries;
+                    rt.beneficiaries_at = Some(Instant::now());
+                }
+            }
+        }
+        if let Some(roll) = self.crypto.current_roll().await {
+            self.display_roll(roll).await;
+        } else {
+            let mut rt = self.runtime.lock().await;
+            if let Some(cancel) = rt.roll_cancel.take() {
+                cancel.cancel();
+            }
+            rt.roll = None;
+        }
         let update = self.updates.status().await;
         let store = self.store.lock().await;
         let rt = self.runtime.lock().await;
+        if let Some(ratings) = crypto
+            .get_mut("rating_session")
+            .and_then(|session| session.get_mut("ratings"))
+            .and_then(Value::as_array_mut)
+        {
+            for rating in ratings {
+                if let Some(clip) = rating["clip_id"]
+                    .as_str()
+                    .and_then(|id| store.data.catalog.get(id))
+                {
+                    rating["title"] = clip.title.clone().into();
+                }
+            }
+        }
         let local = &store.data.profile_id;
         let stats = store.clip_stats();
-        let earned = stats.values().map(|s| s.earned_micropoints).sum::<u64>() as f64
-            / MICROS_PER_POINT as f64;
         let library: Vec<Value> = store
             .data
             .library
             .values()
-            .filter_map(|local| store.data.catalog.get(&local.clip_id).map(|clip| (local, clip)))
+            .filter_map(|local| {
+                store
+                    .data
+                    .catalog
+                    .get(&local.clip_id)
+                    .map(|clip| (local, clip))
+            })
             .map(|(local, clip)| {
                 let stats = stats.get(clip.id.as_str());
                 json!({
                     "clip":clip,
                     "seeding":rt.permanent.contains_key(&clip.id),
                     "added_at_ms":local.added_at_ms,
-                    "points_earned":stats.map_or(0, |s| s.earned_micropoints) as f64 / MICROS_PER_POINT as f64,
+                    "beneficiary":rt.beneficiaries.get(&clip.id),
                     "average_rating":stats.and_then(|s| s.average_rating()),
                     "rating_count":stats.map_or(0, |s| s.rating_count)
                 })
             })
             .collect();
-        let queue: Vec<&Clip> = rt
+        let queue: Vec<Value> = rt
             .ready
             .iter()
             .filter_map(|id| store.data.catalog.get(id))
+            .map(|clip| {
+                let mut value = serde_json::to_value(clip).expect("clip serializes");
+                value["beneficiary"] = json!(rt.beneficiaries.get(&clip.id));
+                value
+            })
             .collect();
         let downloading = rt.downloading.as_ref().map(|(id, handle)| {
             let stats = handle.stats();
             json!({"id":id,"downloaded":stats.progress_bytes,"total":stats.total_bytes})
         });
-        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"balance":store.balance(local),"earned":earned,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
+        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
     }
     pub async fn upload(&self, filename: String, bytes: Vec<u8>) -> Result<Value> {
         let _guard = self.mutation.lock().await;
@@ -572,16 +699,153 @@ impl App {
         self.wake.notify_one();
         Ok(())
     }
-    pub async fn rate(&self, id: &str, score: u8) -> Result<Value> {
+    pub async fn queue_rating(&self, id: &str, score: u8) -> Result<Value> {
+        let _guard = self.mutation.lock().await;
+        ensure!((1..=9).contains(&score), "Choose a rating from 1 to 9");
+        let clip = {
+            let store = self.store.lock().await;
+            let rt = self.runtime.lock().await;
+            ensure!(rt.session, "Start a rating session first");
+            ensure!(
+                rt.ready.front().is_some_and(|current| current == id),
+                "This clip is no longer at the front of your queue"
+            );
+            ensure!(
+                !store.data.watched.contains(id) && !store.data.library.contains_key(id),
+                "This clip has already been watched or is in your library"
+            );
+            store
+                .data
+                .catalog
+                .get(id)
+                .cloned()
+                .context("Unknown clip")?
+        };
+        // Saving the unpaid draft is the only authoritative action here. No
+        // monetary receipt or watched marker exists before batch settlement.
+        let session = self.crypto.queue_rating(id, score).await?;
+        let mut rt = self.runtime.lock().await;
+        let seed_now = rt.session
+            && rt.permanent.len() + rt.temporary.len() < MAX_LIBRARY_FILES
+            && !rt.temporary.contains_key(id);
+        if seed_now {
+            let result = match prepared(&clip) {
+                Ok(torrent) => {
+                    self.engine
+                        .add(&torrent, &self.root.join("cache"), vec![], false)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(handle) => {
+                    rt.temporary.insert(id.to_owned(), handle);
+                }
+                Err(error) => {
+                    rt.notice = Some(format!(
+                        "Rating queued; temporary seeding unavailable: {error}"
+                    ));
+                }
+            }
+        }
+        rt.ready.retain(|current| current != id);
+        drop(rt);
+        self.announce().await;
+        self.wake.notify_one();
+        Ok(json!({"score":score,"queued":true,"paid":false,"rating_session":session}))
+    }
+
+    pub async fn confirm_rating_session(&self, transaction_hash: &str) -> Result<Value> {
+        let _guard = self.mutation.lock().await;
+        let (session, payment) = self
+            .crypto
+            .session_payment(transaction_hash, &self.mesh.peer_id)
+            .await?;
+        let ratings: Vec<_> = session
+            .ratings
+            .iter()
+            .map(|rating| (rating.clip_id.clone(), rating.score))
+            .collect();
+        let receipts =
+            self.store
+                .lock()
+                .await
+                .settle_ratings(&self.identity, &ratings, &payment)?;
+        // If this journal save fails, replaying the same hash is safe: the
+        // Store's atomic commit deduplicates each clip event within that tx.
+        self.crypto
+            .complete_rating_session(&session.id, transaction_hash)
+            .await?;
+        for receipt in receipts {
+            if let Err(error) = self.mesh.receipt(receipt).await {
+                self.notice(&format!(
+                    "Session paid and saved; peer delivery will retry: {error}"
+                ))
+                .await;
+                break;
+            }
+        }
+        self.wake.notify_one();
+        Ok(
+            json!({"confirmed":true,"session_id":session.id,"count":ratings.len(),"total_units":session.total_units,"transaction_hash":transaction_hash}),
+        )
+    }
+
+    pub async fn cancel_rating_session(&self) -> Result<()> {
+        let _guard = self.mutation.lock().await;
+        self.crypto.cancel_rating_session().await?;
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn rate(
+        &self,
+        id: &str,
+        score: u8,
+        transaction_hash: Option<String>,
+    ) -> Result<Value> {
+        if score > 0 && transaction_hash.is_none() {
+            return self.queue_rating(id, score).await;
+        }
         let _guard = self.mutation.lock().await;
         ensure!(score <= 9, "Choose a rating from 0 to 9");
+        let payment = self
+            .crypto
+            .rating_payment(id, score, transaction_hash, &self.mesh.peer_id)
+            .await?;
         let mut store = self.store.lock().await;
         let mut rt = self.runtime.lock().await;
-        ensure!(rt.session, "Start a rating session first");
-        ensure!(
-            rt.ready.front().is_some_and(|current| current == id),
-            "This clip is no longer at the front of your queue"
-        );
+        if let Some(payment) = &payment {
+            if let Some(receipt) = store.data.receipts.iter().find(|r| {
+                r.payload.sender == store.data.profile_id
+                    && r.payload.clip_id == id
+                    && r.payload.payment.as_ref().is_some_and(|p| {
+                        p.chain_id == payment.chain_id
+                            && p.transaction_hash
+                                .eq_ignore_ascii_case(&payment.transaction_hash)
+                    })
+            }) {
+                ensure!(
+                    receipt.payload.clip_id == id && receipt.payload.score == score,
+                    "This payment was already used for a different rating"
+                );
+                return Ok(
+                    json!({"score":score,"reward_per_seeder":0,"seeders":0,"confirmed":true}),
+                );
+            }
+        } else {
+            ensure!(rt.session, "Start a rating session first");
+            ensure!(
+                rt.ready.front().is_some_and(|current| current == id),
+                "This clip is no longer at the front of your queue"
+            );
+        }
+        let seed_now = score > 0
+            && rt.ready.iter().any(|current| current == id)
+            && rt.session
+            && rt.permanent.len() + rt.temporary.len() < MAX_LIBRARY_FILES
+            && !rt.permanent.contains_key(id)
+            && !rt.temporary.contains_key(id);
         let seeders: Vec<String> = rt
             .peers
             .iter()
@@ -590,29 +854,38 @@ impl App {
             })
             .map(|(peer, _)| peer.clone())
             .collect();
-        if score > 0 {
-            ensure!(
-                rt.permanent.len() + rt.temporary.len() < MAX_LIBRARY_FILES,
-                "All 100 seed slots are in use. End the session or free a seed slot first."
-            );
-        }
         let clip = store
             .data
             .catalog
             .get(id)
             .cloned()
             .context("Unknown clip")?;
-        // Start a validated temporary seed before spending; roll it back if saving fails.
-        let handle = if score > 0 {
-            Some(
-                self.engine
-                    .add(&prepared(&clip)?, &self.root.join("cache"), vec![], false)
-                    .await?,
-            )
+        // Tokens have already settled. Media availability must never prevent payment confirmation.
+        let handle = if seed_now {
+            match self
+                .engine
+                .add(&prepared(&clip)?, &self.root.join("cache"), vec![], false)
+                .await
+            {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    rt.notice = Some(format!(
+                        "Rating confirmed; temporary seeding unavailable: {error}"
+                    ));
+                    None
+                }
+            }
         } else {
             None
         };
-        let receipt = match store.rate(&self.identity, id, score, seeders, rt.peers.len() + 1) {
+        let receipt = match store.rate_onchain(
+            &self.identity,
+            id,
+            score,
+            seeders,
+            rt.peers.len() + 1,
+            payment,
+        ) {
             Ok(receipt) => receipt,
             Err(error) => {
                 if let Some(h) = handle {
@@ -621,7 +894,7 @@ impl App {
                 return Err(error);
             }
         };
-        rt.ready.pop_front();
+        rt.ready.retain(|current| current != id);
         if let Some(handle) = handle {
             rt.temporary.insert(id.to_owned(), handle);
         }
@@ -642,18 +915,22 @@ impl App {
         self.wake.notify_one();
         Ok(json!({"score":score,"reward_per_seeder":reward,"seeders":recipients}))
     }
-    pub async fn roll(self: &Arc<Self>, wager: f64) -> Result<Value> {
-        let wager = wager_micropoints(wager)?;
+    pub async fn roll(self: &Arc<Self>, transaction_hash: &str) -> Result<Value> {
         let _guard = self.mutation.lock().await;
-        let mut store = self.store.lock().await;
-        let receipt = store.roll(&self.identity, wager)?;
-        let payload = receipt
-            .payload
-            .roll
-            .as_ref()
-            .context("Missing roll result")?;
-        let multiplier = roll_multiplier(payload.ticket)?;
+        let roll = self.crypto.confirm_roll(transaction_hash).await?;
+        self.display_roll(roll).await;
+        Ok(serde_json::to_value(
+            self.runtime.lock().await.roll.as_ref(),
+        )?)
+    }
+
+    async fn display_roll(self: &Arc<Self>, chain: ChainRoll) {
+        let store = self.store.lock().await;
         let mut rt = self.runtime.lock().await;
+        if rt.roll.as_ref().is_some_and(|r| r.chain == chain) {
+            return;
+        }
+        let multiplier = chain.multiplier.unwrap_or(0);
         // Availability never affects the draw, and watched history does not filter Roll.
         let stats = store.clip_stats();
         let choice = (multiplier > 0)
@@ -697,15 +974,15 @@ impl App {
                     .choose(&mut rand::rng())
             })
             .flatten();
+        let pending = chain.status == "pending";
         let result = RollResult {
-            id: receipt.id.clone(),
-            multiplier,
-            wager: wager as f64 / MICROS_PER_POINT as f64,
-            payout: payload.payout_micropoints()? as f64 / MICROS_PER_POINT as f64,
-            balance: store.balance(&store.data.profile_id),
+            chain,
             clip: None,
-            message: Some(if multiplier == 0 {
-                "No clip on a 0. Your wager was lost.".into()
+            message: Some(if pending {
+                "Wager escrowed. Settle this roll after its committed drand round is available."
+                    .into()
+            } else if multiplier == 0 {
+                "No clip on a 0. Your wager was burned on-chain.".into()
             } else if choice.is_some() {
                 format!("Preparing a rating {multiplier} clip…")
             } else {
@@ -722,18 +999,11 @@ impl App {
         drop(store);
         if let Some(choice) = choice {
             let app = self.clone();
-            let id = result.id.clone();
+            let id = result.chain.id.clone();
             tokio::spawn(async move {
                 app.prepare_roll(id, choice, cancel).await;
             });
         }
-        if let Err(error) = self.mesh.receipt(receipt).await {
-            self.notice(&format!(
-                "Roll saved locally; network delivery will retry: {error}"
-            ))
-            .await;
-        }
-        Ok(serde_json::to_value(result)?)
     }
 
     async fn prepare_roll(&self, id: String, choice: RollClip, cancel: CancellationToken) {
@@ -805,7 +1075,7 @@ impl App {
         if cancel.is_cancelled() {
             return;
         }
-        if rt.roll.as_ref().is_some_and(|result| result.id == id) {
+        if rt.roll.as_ref().is_some_and(|result| result.chain.id == id) {
             match preparation {
                 Ok(clip) => {
                     rt.roll_file = Some(clip.id.clone());
@@ -862,6 +1132,12 @@ impl App {
             if self.shutdown.is_cancelled() {
                 break;
             }
+            let queued: BTreeSet<String> = self
+                .crypto
+                .session_snapshot()
+                .await
+                .map(|session| session.ratings.into_iter().map(|r| r.clip_id).collect())
+                .unwrap_or_default();
             let choice = {
                 let store = self.store.lock().await;
                 let rt = self.runtime.lock().await;
@@ -870,6 +1146,8 @@ impl App {
                 } else {
                     let candidates = store.data.catalog.values().filter(|clip| {
                         !store.data.watched.contains(&clip.id)
+                            && !queued.contains(&clip.id)
+                            && !rt.temporary.contains_key(&clip.id)
                             && !store.data.library.contains_key(&clip.id)
                             && !rt.ready.contains(&clip.id)
                             && !rt
@@ -939,13 +1217,21 @@ impl App {
                 torrent::create_torrent(&bytes, &clip.extension)?.info_hash == clip.info_hash,
                 "Downloaded torrent is not canonical for these bytes"
             );
+            let queued = self.crypto.session_snapshot().await.is_some_and(|session| {
+                session
+                    .ratings
+                    .iter()
+                    .any(|rating| rating.clip_id == clip.id)
+            });
             let mut store = self.store.lock().await;
             let mut verified = clip.clone();
             verified.width = video.width;
             verified.height = video.height;
             verified.duration_secs = video.duration_secs;
             store.add_verified_clip(verified)?;
-            if !store.data.watched.contains(&clip.id) && !store.data.library.contains_key(&clip.id)
+            if !queued
+                && !store.data.watched.contains(&clip.id)
+                && !store.data.library.contains_key(&clip.id)
             {
                 self.runtime.lock().await.ready.push_back(clip.id.clone());
             }
@@ -970,25 +1256,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn roll_wagers_use_exact_point_precision_and_reject_invalid_amounts() {
-        assert_eq!(wager_micropoints(1.0).unwrap(), 1_000_000);
-        assert_eq!(wager_micropoints(0.000001).unwrap(), 1);
-        assert_eq!(wager_micropoints(1.234567).unwrap(), 1_234_567);
-        assert_eq!(wager_micropoints(0.1 + 0.2).unwrap(), 300_000);
-        for invalid in [
-            0.0,
-            -1.0,
-            0.0000001,
-            1.0000001,
-            f64::NAN,
-            f64::INFINITY,
-            f64::MAX,
-        ] {
-            assert!(wager_micropoints(invalid).is_err(), "Accepted {invalid}");
-        }
-    }
 
     #[test]
     fn roll_rating_uses_nearest_integer_tiers() {

@@ -55,9 +55,20 @@ pub async fn serve(
         .route("/", get(index))
         .route("/app.js", get(js))
         .route("/style.css", get(css))
+        .route("/joah.svg", get(logo))
+        .route("/joah.png", get(logo_png))
         .route("/api/state", get(status))
+        .route("/api/crypto", get(crypto_status))
+        .route("/api/crypto/transaction", post(crypto_transaction))
+        .route("/api/crypto/pending", post(crypto_pending))
+        .route("/api/wallet", post(wallet))
+        .route("/api/wallet/browser", post(wallet_browser))
         .route("/api/upload", post(upload))
         .route("/api/rate", post(rate))
+        .route("/api/rating-session/confirm", post(rating_session_confirm))
+        .route("/api/rating-session/cancel", post(rating_session_cancel))
+        .route("/api/rating-session/unlock", post(rating_session_unlock))
+        .route("/api/rating-session/reset", post(rating_session_reset))
         .route("/api/roll", post(roll))
         .route("/api/session", post(session))
         .route("/api/settings", post(settings))
@@ -139,6 +150,53 @@ async fn css() -> impl IntoResponse {
 async fn status(State(state): State<HttpState>) -> Json<Value> {
     Json(state.app.state().await)
 }
+async fn logo() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        include_str!("../assets/joah.svg"),
+    )
+}
+async fn logo_png() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../assets/joah-256.png").as_slice(),
+    )
+}
+async fn crypto_status(State(state): State<HttpState>) -> Json<Value> {
+    Json(state.app.crypto.state().await)
+}
+async fn crypto_transaction(
+    State(state): State<HttpState>,
+    Json(input): Json<crate::crypto::TransactionRequest>,
+) -> ApiResult {
+    Ok(Json(
+        state
+            .app
+            .crypto
+            .transaction(input, &state.app.mesh.peer_id)
+            .await?,
+    ))
+}
+async fn crypto_pending(
+    State(state): State<HttpState>,
+    Json(input): Json<Option<crate::crypto::PendingTransaction>>,
+) -> ApiResult {
+    state.app.crypto.set_pending(input).await?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Wallet {
+    address: Option<String>,
+}
+async fn wallet(State(state): State<HttpState>, Json(input): Json<Wallet>) -> ApiResult {
+    state.app.crypto.set_wallet(input.address).await?;
+    Ok(Json(json!({"ok":true})))
+}
+async fn wallet_browser(State(state): State<HttpState>) -> ApiResult {
+    crate::update::open_browser(&format!("http://{}/", state.host))?;
+    Ok(Json(json!({"ok":true})))
+}
 async fn update_check(State(state): State<HttpState>) -> Json<crate::update::Status> {
     Json(state.app.updates.check().await)
 }
@@ -181,17 +239,58 @@ async fn upload(State(state): State<HttpState>, mut multipart: Multipart) -> Api
 struct Rate {
     id: String,
     score: u8,
+    transaction_hash: Option<String>,
 }
 async fn rate(State(state): State<HttpState>, Json(input): Json<Rate>) -> ApiResult {
-    Ok(Json(state.app.rate(&input.id, input.score).await?))
+    Ok(Json(
+        state
+            .app
+            .rate(&input.id, input.score, input.transaction_hash)
+            .await?,
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RatingSessionConfirmation {
+    transaction_hash: String,
+}
+async fn rating_session_confirm(
+    State(state): State<HttpState>,
+    Json(input): Json<RatingSessionConfirmation>,
+) -> ApiResult {
+    Ok(Json(
+        state
+            .app
+            .confirm_rating_session(&input.transaction_hash)
+            .await?,
+    ))
+}
+async fn rating_session_cancel(State(state): State<HttpState>) -> ApiResult {
+    state.app.cancel_rating_session().await?;
+    Ok(Json(json!({"ok":true})))
+}
+async fn rating_session_unlock(State(state): State<HttpState>) -> ApiResult {
+    state.app.crypto.cancel_rating_preparation().await?;
+    Ok(Json(json!({"ok":true})))
+}
+async fn rating_session_reset(
+    State(state): State<HttpState>,
+    Json(input): Json<RatingSessionConfirmation>,
+) -> ApiResult {
+    state
+        .app
+        .crypto
+        .reset_session_submission(&input.transaction_hash)
+        .await?;
+    Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Roll {
-    wager: f64,
+    transaction_hash: String,
 }
 async fn roll(State(state): State<HttpState>, Json(input): Json<Roll>) -> ApiResult {
-    Ok(Json(state.app.roll(input.wager).await?))
+    Ok(Json(state.app.roll(&input.transaction_hash).await?))
 }
 #[derive(Deserialize)]
 struct Session {

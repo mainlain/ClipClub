@@ -2,7 +2,8 @@
 //!
 //! Signatures prevent impersonation and receipt replay. They do not establish a
 //! global user count, prove seed ownership, prevent Sybil identities, or provide
-//! consensus during network partitions. This is an experimental points ledger.
+//! consensus during network partitions. Monetary activity is settled on MegaETH;
+//! the old points ledger is retained only to validate existing saved history.
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -10,6 +11,7 @@ use libp2p::{
     PeerId,
     identity::{Keypair, PublicKey},
 };
+#[cfg(test)]
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -229,6 +231,45 @@ pub fn roll_multiplier(ticket: u16) -> Result<u8> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChainPayment {
+    pub chain_id: u64,
+    pub contract: String,
+    pub transaction_hash: String,
+    pub wallet: String,
+}
+
+impl ChainPayment {
+    /// Structural checks only. The application also verifies the transaction's
+    /// successful rating event against the configured MegaETH contract by RPC.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            matches!(self.chain_id, 4326 | 6343),
+            "Payment must be on MegaETH mainnet or testnet"
+        );
+        for (value, length, label) in [
+            (self.contract.as_str(), 20, "payment contract"),
+            (
+                self.transaction_hash.as_str(),
+                32,
+                "payment transaction hash",
+            ),
+            (self.wallet.as_str(), 20, "payment wallet"),
+        ] {
+            let hex = value
+                .strip_prefix("0x")
+                .context(format!("Invalid {label}"))?;
+            ensure!(
+                hex.len() == length * 2
+                    && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && hex.bytes().any(|byte| byte != b'0'),
+                "Invalid {label}"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RatingPayload {
     pub sender: String,
     pub clip_id: String,
@@ -242,6 +283,9 @@ pub struct RatingPayload {
     // Omit this field on ratings to preserve the bytes of all legacy signatures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roll: Option<RollPayload>,
+    // Legacy receipt serialization must remain byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<ChainPayment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -273,7 +317,9 @@ impl RatingReceipt {
             "Invalid total user count"
         );
         ensure!(
-            (self.payload.score == 0 || !self.payload.seeders.is_empty())
+            (self.payload.score == 0
+                || self.payload.payment.is_some()
+                || !self.payload.seeders.is_empty())
                 && self.payload.seeders.len() <= 10_000,
             "Invalid seeder count"
         );
@@ -293,11 +339,13 @@ impl RatingReceipt {
             );
             previous = Some(seeder);
         }
-        reward_micropoints(
-            self.payload.score,
-            self.payload.seeders.len(),
-            self.payload.total_users,
-        )?;
+        if self.payload.payment.is_none() {
+            reward_micropoints(
+                self.payload.score,
+                self.payload.seeders.len(),
+                self.payload.total_users,
+            )?;
+        }
         if let Some(roll) = &self.payload.roll {
             ensure!(
                 self.payload.clip_id == ROLL_CLIP_ID
@@ -307,6 +355,13 @@ impl RatingReceipt {
                 "Invalid roll receipt fields"
             );
             roll.payout_micropoints()?;
+        }
+        if let Some(payment) = &self.payload.payment {
+            payment.validate()?;
+            ensure!(
+                self.payload.score > 0 && self.payload.roll.is_none(),
+                "Onchain payment is only valid for a positive rating"
+            );
         }
         if let Some(previous) = &self.payload.previous {
             validate_hex(previous, 32, "previous receipt ID")?;
@@ -324,6 +379,9 @@ impl RatingReceipt {
     }
 
     pub fn reward_per_seeder(&self) -> Result<f64> {
+        if self.payload.payment.is_some() {
+            return Ok(0.0);
+        }
         Ok(reward_micropoints(
             self.payload.score,
             self.payload.seeders.len(),
@@ -654,7 +712,7 @@ impl Store {
                 entry.rating_count += 1;
                 entry.rating_total += u64::from(payload.score);
             }
-            if payload.seeders.contains(&self.data.profile_id) {
+            if payload.payment.is_none() && payload.seeders.contains(&self.data.profile_id) {
                 entry.earned_micropoints +=
                     reward_micropoints(payload.score, payload.seeders.len(), payload.total_users)
                         .expect("Stored receipts have already passed validation");
@@ -672,6 +730,9 @@ impl Store {
     pub fn balance_micropoints(&self, identity: &str) -> u64 {
         let mut balance = i128::from(INITIAL_MICROPOINTS);
         for receipt in &self.data.receipts {
+            if receipt.payload.payment.is_some() {
+                continue;
+            }
             if let Some(roll) = &receipt.payload.roll {
                 if receipt.payload.sender == identity {
                     balance -= i128::from(roll.wager_micropoints);
@@ -699,6 +760,7 @@ impl Store {
         balance.clamp(0, i128::from(u64::MAX)) as u64
     }
 
+    #[cfg(test)]
     pub fn balance(&self, identity: &str) -> f64 {
         self.balance_micropoints(identity) as f64 / MICROS_PER_POINT as f64
     }
@@ -718,7 +780,8 @@ impl Store {
             ensure!(
                 !self.data.receipts.iter().any(|r| r.payload.roll.is_none()
                     && r.payload.sender == payload.sender
-                    && r.payload.clip_id == payload.clip_id),
+                    && r.payload.clip_id == payload.clip_id
+                    && (payload.payment.is_none() || r.payload.score > 0)),
                 "This identity has already rated this clip"
             );
         }
@@ -726,6 +789,20 @@ impl Store {
             !self.data.receipts.iter().any(|r| r.id == receipt.id),
             "Receipt has already been applied"
         );
+        if let Some(payment) = &payload.payment {
+            ensure!(
+                !self.data.receipts.iter().any(|r| {
+                    r.payload.payment.as_ref().is_some_and(|used| {
+                        used.chain_id == payment.chain_id
+                            && r.payload.clip_id == payload.clip_id
+                            && used
+                                .transaction_hash
+                                .eq_ignore_ascii_case(&payment.transaction_hash)
+                    })
+                }),
+                "Payment transaction has already been used for a rating"
+            );
+        }
         let previous = self
             .data
             .receipts
@@ -738,6 +815,11 @@ impl Store {
                 && payload.previous.as_deref() == previous.map(|r| r.id.as_str()),
             "Receipt is out of order or conflicts with the sender's history"
         );
+        // Onchain ratings are paid in the contract. Legacy points can neither
+        // pay for them nor limit how much a wallet may spend.
+        if payload.payment.is_some() {
+            return Ok(());
+        }
         let balance = self.balance_micropoints(&payload.sender);
         if let Some(roll) = &payload.roll {
             let remainder = balance
@@ -769,13 +851,123 @@ impl Store {
         Ok(true)
     }
 
+    /// Record an externally verified payment, or a free zero-score skip.
+    /// Callers must verify paid rating events before reaching this method.
+    pub fn rate_onchain(
+        &mut self,
+        key: &Keypair,
+        clip_id: &str,
+        score: u8,
+        seeders: Vec<String>,
+        total_users: usize,
+        payment: Option<ChainPayment>,
+    ) -> Result<RatingReceipt> {
+        ensure!(
+            score == 0 || payment.is_some(),
+            "A positive rating requires a confirmed onchain payment"
+        );
+        self.record_rating(key, clip_id, score, seeders, total_users, payment)
+    }
+
+    #[cfg(test)]
     pub fn rate(
         &mut self,
         key: &Keypair,
         clip_id: &str,
         score: u8,
+        seeders: Vec<String>,
+        total_users: usize,
+    ) -> Result<RatingReceipt> {
+        self.record_rating(key, clip_id, score, seeders, total_users, None)
+    }
+
+    fn record_rating(
+        &mut self,
+        key: &Keypair,
+        clip_id: &str,
+        score: u8,
+        seeders: Vec<String>,
+        total_users: usize,
+        payment: Option<ChainPayment>,
+    ) -> Result<RatingReceipt> {
+        let receipt =
+            self.make_rating_receipt(key, clip_id, score, seeders, total_users, payment)?;
+        self.apply_receipt(receipt.clone())?;
+        Ok(receipt)
+    }
+
+    /// One verified on-chain batch becomes one atomic, replay-safe disk commit.
+    pub fn settle_ratings(
+        &mut self,
+        key: &Keypair,
+        ratings: &[(String, u8)],
+        payment: &ChainPayment,
+    ) -> Result<Vec<RatingReceipt>> {
+        payment.validate()?;
+        ensure!(
+            !ratings.is_empty() && ratings.len() <= 100,
+            "A session must contain 1–100 ratings"
+        );
+        let mut clips = BTreeSet::new();
+        for (clip, score) in ratings {
+            ensure!(
+                (1..=9).contains(score) && clips.insert(clip),
+                "Invalid or duplicate session rating"
+            );
+        }
+        let before = self.data.clone();
+        let result = (|| -> Result<Vec<RatingReceipt>> {
+            let mut receipts = Vec::new();
+            for (clip, score) in ratings {
+                if let Some(receipt) = self.data.receipts.iter().find(|r| {
+                    r.payload.sender == self.data.profile_id
+                        && r.payload.clip_id == *clip
+                        && r.payload.payment.as_ref().is_some_and(|p| {
+                            p.chain_id == payment.chain_id
+                                && p.transaction_hash
+                                    .eq_ignore_ascii_case(&payment.transaction_hash)
+                        })
+                }) {
+                    ensure!(
+                        receipt.payload.score == *score
+                            && receipt.payload.payment.as_ref().is_some_and(|p| p
+                                .contract
+                                .eq_ignore_ascii_case(&payment.contract)
+                                && p.wallet.eq_ignore_ascii_case(&payment.wallet)),
+                        "This session payment conflicts with a saved rating"
+                    );
+                    receipts.push(receipt.clone());
+                    continue;
+                }
+                let receipt =
+                    self.make_rating_receipt(key, clip, *score, vec![], 3, Some(payment.clone()))?;
+                self.validate_receipt(&receipt)?;
+                self.data.watched.insert(clip.clone());
+                self.data.receipts.push(receipt.clone());
+                receipts.push(receipt);
+            }
+            Ok(receipts)
+        })();
+        match result {
+            Ok(receipts) => {
+                self.commit(before)?;
+                Ok(receipts)
+            }
+            Err(error) => {
+                self.data = before;
+                Err(error)
+            }
+        }
+    }
+
+    fn make_rating_receipt(
+        &self,
+        key: &Keypair,
+        clip_id: &str,
+        score: u8,
         mut seeders: Vec<String>,
         total_users: usize,
+        payment: Option<ChainPayment>,
     ) -> Result<RatingReceipt> {
         let sender = key.public().to_peer_id().to_string();
         ensure!(
@@ -783,11 +975,11 @@ impl Store {
             "Signing key is not this profile's identity"
         );
         ensure!(
-            !self.data.library.contains_key(clip_id),
+            payment.is_some() || !self.data.library.contains_key(clip_id),
             "You cannot rate your own seeded clip"
         );
         ensure!(
-            !self.data.watched.contains(clip_id),
+            payment.is_some() || !self.data.watched.contains(clip_id),
             "You have already watched this clip"
         );
         seeders.sort();
@@ -807,6 +999,7 @@ impl Store {
             sequence: previous.map_or(1, |r| r.payload.sequence.saturating_add(1)),
             previous: previous.map(|r| r.id.clone()),
             roll: None,
+            payment,
         };
         let bytes = receipt_bytes(&payload)?;
         let receipt = RatingReceipt {
@@ -815,10 +1008,10 @@ impl Store {
             public_key: STANDARD.encode(key.public().encode_protobuf()),
             signature: STANDARD.encode(key.sign(&bytes).context("Could not sign rating")?),
         };
-        self.apply_receipt(receipt.clone())?;
         Ok(receipt)
     }
 
+    #[cfg(test)]
     pub fn roll(&mut self, key: &Keypair, wager_micropoints: u64) -> Result<RatingReceipt> {
         self.record_roll(
             key,
@@ -829,6 +1022,7 @@ impl Store {
         )
     }
 
+    #[cfg(test)]
     fn record_roll(&mut self, key: &Keypair, roll: RollPayload) -> Result<RatingReceipt> {
         let sender = key.public().to_peer_id().to_string();
         ensure!(
@@ -850,6 +1044,7 @@ impl Store {
             sequence: previous.map_or(1, |r| r.payload.sequence.saturating_add(1)),
             previous: previous.map(|r| r.id.clone()),
             roll: Some(roll),
+            payment: None,
         };
         let bytes = receipt_bytes(&payload)?;
         let receipt = RatingReceipt {
@@ -908,6 +1103,262 @@ mod tests {
         let bytes = receipt_bytes(&receipt.payload).unwrap();
         receipt.id = hex::encode(Sha256::digest(&bytes));
         receipt.signature = STANDARD.encode(key.sign(&bytes).unwrap());
+    }
+
+    fn payment(number: u8) -> ChainPayment {
+        ChainPayment {
+            chain_id: 6343,
+            contract: format!("0x{:040x}", 1),
+            transaction_hash: format!("0x{number:064x}"),
+            wallet: format!("0x{:040x}", 2),
+        }
+    }
+
+    #[test]
+    fn session_settlement_is_atomic_and_retry_does_not_duplicate_any_rating() {
+        let (mut store, key, _) = fixture();
+        let (mut receiver, _, _) = fixture();
+        for n in 1..=3 {
+            store.add_clip(clip(n)).unwrap();
+            receiver.add_clip(clip(n)).unwrap();
+        }
+        let before = fs::read(&store.path).unwrap();
+        assert!(
+            store
+                .settle_ratings(&key, &[(clip(1).id, 5), (clip(4).id, 3)], &payment(20))
+                .is_err()
+        );
+        assert!(store.data.receipts.is_empty() && store.data.watched.is_empty());
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        let entries = vec![(clip(1).id, 5), (clip(2).id, 3)];
+        let receipts = store.settle_ratings(&key, &entries, &payment(20)).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[1].payload.previous, Some(receipts[0].id.clone()));
+        for receipt in &receipts {
+            receiver.apply_receipt(receipt.clone()).unwrap();
+        }
+        assert_eq!(
+            receiver.clip_stats()[clip(2).id.as_str()].average_rating(),
+            Some(3.0)
+        );
+        assert_eq!(
+            store.settle_ratings(&key, &entries, &payment(20)).unwrap(),
+            receipts
+        );
+        let mut restored = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+        assert_eq!(
+            restored
+                .settle_ratings(&key, &entries, &payment(20))
+                .unwrap(),
+            receipts
+        );
+        assert_eq!(restored.data.receipts.len(), 2);
+        assert!(
+            restored
+                .settle_ratings(&key, &[(clip(1).id, 9)], &payment(20))
+                .is_err()
+        );
+        assert!(
+            restored
+                .settle_ratings(&key, &[(clip(3).id, 2), (clip(3).id, 2)], &payment(21))
+                .is_err()
+        );
+        assert!(restored.settle_ratings(&key, &[], &payment(21)).is_err());
+        assert_eq!(restored.data.receipts.len(), 2);
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
+        let _ = fs::remove_dir_all(receiver.path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_failed_session_save_leaves_no_partially_confirmed_receipts() {
+        let (mut store, key, _) = fixture();
+        for n in 1..=2 {
+            store.add_clip(clip(n)).unwrap();
+        }
+        let saved = fs::read(&store.path).unwrap();
+        fs::create_dir(store.path.with_extension("json.tmp")).unwrap();
+        assert!(
+            store
+                .settle_ratings(&key, &[(clip(1).id, 5), (clip(2).id, 9)], &payment(21))
+                .is_err()
+        );
+        assert!(store.data.receipts.is_empty() && store.data.watched.is_empty());
+        assert_eq!(fs::read(&store.path).unwrap(), saved);
+        fs::remove_dir(store.path.with_extension("json.tmp")).unwrap();
+        assert_eq!(
+            store
+                .settle_ratings(&key, &[(clip(1).id, 5), (clip(2).id, 9)], &payment(21))
+                .unwrap()
+                .len(),
+            2
+        );
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
+    }
+
+    #[test]
+    fn paid_ratings_have_no_legacy_points_limit_or_effect() {
+        let (mut sender, key, _) = fixture();
+        let (mut receiver, _, _) = fixture();
+        let seeder = receiver.data.profile_id.clone();
+        for number in 1..=12 {
+            for store in [&mut sender, &mut receiver] {
+                store.add_clip(clip(number)).unwrap();
+            }
+            let receipt = sender
+                .rate_onchain(
+                    &key,
+                    &clip(number).id,
+                    9,
+                    vec![seeder.clone()],
+                    3,
+                    Some(payment(number)),
+                )
+                .unwrap();
+            assert_eq!(receipt.payload.sequence, u64::from(number));
+            assert_eq!(receipt.reward_per_seeder().unwrap(), 0.0);
+            receiver.apply_receipt(receipt).unwrap();
+        }
+        // 108 tokens of confirmed payments must not hit the retired 100-point grant.
+        assert_eq!(
+            sender.balance_micropoints(&sender.data.profile_id),
+            INITIAL_MICROPOINTS
+        );
+        assert_eq!(receiver.balance_micropoints(&seeder), INITIAL_MICROPOINTS);
+        for stats in receiver.clip_stats().values() {
+            assert_eq!(stats.rating_count, 1);
+            assert_eq!(stats.average_rating(), Some(9.0));
+            assert_eq!(stats.earned_micropoints, 0);
+        }
+        for store in [sender, receiver] {
+            let reopened = Store::open(store.path.clone(), store.data.profile_id.clone()).unwrap();
+            assert_eq!(reopened.data.receipts, store.data.receipts);
+            let _ = fs::remove_dir_all(store.path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn chain_payments_are_required_validated_and_cannot_be_replayed() {
+        let (mut store, key, peers) = fixture();
+        for number in 1..=3 {
+            store.add_clip(clip(number)).unwrap();
+        }
+        assert!(
+            store
+                .rate_onchain(&key, &clip(1).id, 5, vec![peers[0].clone()], 3, None)
+                .is_err()
+        );
+        assert!(
+            store
+                .rate_onchain(&key, &clip(1).id, 0, vec![], 3, Some(payment(1)))
+                .is_err()
+        );
+        let receipt = store
+            .rate_onchain(
+                &key,
+                &clip(1).id,
+                5,
+                vec![peers[0].clone()],
+                3,
+                Some(payment(10)),
+            )
+            .unwrap();
+        assert!(!store.apply_receipt(receipt.clone()).unwrap());
+        // The same event cannot be claimed by another peer, even with hex case changes.
+        let mut duplicate = payment(10);
+        duplicate.transaction_hash = duplicate.transaction_hash.replace('a', "A");
+        let other_key = Keypair::generate_ed25519();
+        let mut replay = receipt.clone();
+        replay.payload.sender = other_key.public().to_peer_id().to_string();
+        replay.payload.payment = Some(duplicate.clone());
+        replay.public_key = STANDARD.encode(other_key.public().encode_protobuf());
+        resign(&mut replay, &other_key);
+        assert!(store.apply_receipt(replay).is_err());
+        // A second verified clip event in the same atomic payment is a distinct rating.
+        store
+            .rate_onchain(&key, &clip(2).id, 5, vec![], 3, Some(duplicate))
+            .unwrap();
+        for invalid in [
+            ChainPayment {
+                chain_id: 1,
+                ..payment(2)
+            },
+            ChainPayment {
+                contract: "0x00".into(),
+                ..payment(2)
+            },
+            ChainPayment {
+                wallet: format!("0x{}", "0".repeat(40)),
+                ..payment(2)
+            },
+            ChainPayment {
+                transaction_hash: format!("0x{}", "g".repeat(64)),
+                ..payment(2)
+            },
+        ] {
+            let mut altered = receipt.clone();
+            altered.payload.payment = Some(invalid);
+            resign(&mut altered, &key);
+            assert!(altered.verify().is_err());
+        }
+        let skipped = store
+            .rate_onchain(&key, &clip(3).id, 0, vec![], 3, None)
+            .unwrap();
+        assert_eq!(skipped.payload.sequence, 3);
+        assert_eq!(
+            skipped.payload.previous,
+            Some(store.data.receipts[1].id.clone())
+        );
+        assert!(skipped.payload.payment.is_none());
+        assert!(store.data.watched.contains(&clip(3).id));
+        assert!(store.data.watched.contains(&clip(2).id));
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
+    }
+
+    #[test]
+    fn paid_confirmation_does_not_depend_on_online_seeders_or_current_watch_state() {
+        let (mut store, key, _) = fixture();
+        store.add_clip(clip(1)).unwrap();
+        store
+            .rate_onchain(&key, &clip(1).id, 0, vec![], 3, None)
+            .unwrap();
+        let paid = store
+            .rate_onchain(&key, &clip(1).id, 5, vec![], 3, Some(payment(10)))
+            .unwrap();
+        paid.verify().unwrap();
+        assert_eq!(store.clip_stats()[clip(1).id.as_str()].rating_count, 1);
+        assert!(
+            store
+                .rate_onchain(&key, &clip(1).id, 5, vec![], 3, Some(payment(11)))
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
+    }
+
+    #[test]
+    fn legacy_receipt_bytes_and_signatures_remain_unchanged() {
+        let (mut store, key, peers) = fixture();
+        store.add_clip(clip(1)).unwrap();
+        let receipt = store
+            .rate(&key, &clip(1).id, 5, vec![peers[0].clone()], 3)
+            .unwrap();
+        let payload = &receipt.payload;
+        let legacy = format!(
+            "{{\"sender\":\"{}\",\"clip_id\":\"{}\",\"score\":5,\"seeders\":[\"{}\"],\"total_users\":3,\"sequence\":1,\"previous\":null}}",
+            payload.sender, payload.clip_id, peers[0],
+        );
+        let mut legacy_bytes = b"clipcrop/rating/v1\0".to_vec();
+        legacy_bytes.extend_from_slice(legacy.as_bytes());
+        assert_eq!(receipt_bytes(payload).unwrap(), legacy_bytes);
+        assert_eq!(receipt.id, hex::encode(Sha256::digest(&legacy_bytes)));
+        assert!(
+            key.public()
+                .verify(&legacy_bytes, &STANDARD.decode(&receipt.signature).unwrap())
+        );
+        let decoded: RatingPayload = serde_json::from_str(&legacy).unwrap();
+        assert!(decoded.payment.is_none());
+        assert!(decoded.roll.is_none());
+        assert_eq!(decoded, *payload);
+        let _ = fs::remove_dir_all(store.path.parent().unwrap());
     }
 
     #[test]

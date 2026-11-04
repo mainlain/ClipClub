@@ -1,0 +1,13 @@
+{
+  "chainId": 4326,
+  "name": "좋아",
+  "symbol": "✨",
+  "decimals": 6,
+  "genesisSupplyTokens": "1000000000",
+  "genesisSupplyUnits": "1000000000000000",
+  "treasuryEns": null,
+  "treasury": "0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637",
+  "verifier": "0x7a53a6eFA81c426838fcf4824E6e207923969b36",
+  "deploymentStatus": "on_hold",
+  "deploymentHoldReason": "Rating distribution formula is being reconsidered; deployment was explicitly deferred."
+}

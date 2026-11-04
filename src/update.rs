@@ -436,7 +436,7 @@ async fn store_download(response: reqwest::Response, asset: &Asset, path: &Path)
     Ok(())
 }
 
-fn open_browser(url: &str) -> Result<()> {
+pub(crate) fn open_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     let mut command = Command::new("/usr/bin/open");
     #[cfg(target_os = "linux")]

@@ -5,8 +5,7 @@ Usage: python3 scripts/integration.py [path/to/clipclub] [path/to/ffmpeg]
 import hashlib
 import http.client
 import json
-import math
-from decimal import Decimal
+import os
 from pathlib import Path
 import re
 import signal
@@ -23,6 +22,9 @@ BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / 'target/debug/clipclu
 FFMPEG = Path(sys.argv[2] if len(sys.argv) > 2 else ROOT / '.build/ffmpeg').resolve()
 WORK = Path(tempfile.mkdtemp(prefix='clipcrop-e2e-'))
 PROCESSES = []
+ENVIRONMENT = dict(os.environ)
+for key in ('CLIPCLUB_MEGAETH_CHAIN_ID', 'CLIPCLUB_JOAH_CONTRACT', 'CLIPCLUB_MEGAETH_RPC_URL'):
+    ENVIRONMENT.pop(key, None)
 
 def free_port():
     with socket.socket() as stream:
@@ -51,7 +53,7 @@ class Client:
 
     def start(self):
         self.log = open(WORK / f'{self.name}.log', 'a')
-        self.process = subprocess.Popen([str(BINARY), '--headless', '--data-dir', str(self.root), '--http-port', str(self.ports[0]), '--p2p-port', str(self.ports[1]), '--torrent-port', str(self.ports[2])], stdout=self.log, stderr=self.log)
+        self.process = subprocess.Popen([str(BINARY), '--headless', '--data-dir', str(self.root), '--http-port', str(self.ports[0]), '--p2p-port', str(self.ports[1]), '--torrent-port', str(self.ports[2])], env=ENVIRONMENT, stdout=self.log, stderr=self.log)
         PROCESSES.append(self)
         self.url = f'http://127.0.0.1:{self.ports[0]}'
         def load_token():
@@ -121,7 +123,13 @@ try:
     fake = WORK / 'fake.mp4'; fake.write_bytes(b'not a video')
     large = WORK / 'large.mp4'; large.write_bytes(b'0' * 8_000_001)
     alice, bob = Client('Alice'), Client('Bob')
-    assert alice.state()['balance'] == bob.state()['balance'] == 100
+    for client in (alice, bob):
+        crypto = client.state()['crypto']
+        assert crypto['chain_id'] == 4326 and not crypto['configured']
+        assert crypto['name'] == '좋아' and crypto['symbol'] == '✨' and crypto['decimals'] == 6
+        assert crypto['balance_units'] == '0' and crypto['total_supply_units'] == '0'
+        assert crypto['wallet'] is None and crypto['contract'] is None
+        assert 'balance' not in client.state(), 'Legacy points were exposed as spendable money'
     bob.connect(alice)
     wait_for(lambda: len(alice.state()['peers']) == 1 and len(bob.state()['peers']) == 1, 'mutual presence')
     assert_http_error(lambda: urllib.request.urlopen(alice.url + '/api/state'), 'Invalid local session')
@@ -137,7 +145,7 @@ try:
     first = alice.upload(videos[0])
     assert first['duplicate'] and len(alice.state()['library']) == 13
     library = alice.state()['library']
-    assert all(row['added_at_ms'] > 0 and row['points_earned'] == 0 and row['average_rating'] is None and row['rating_count'] == 0 for row in library)
+    assert all(row['added_at_ms'] > 0 and 'points_earned' not in row and row['average_rating'] is None and row['rating_count'] == 0 for row in library)
     assert len({row['added_at_ms'] for row in library}) == 13
     wait_for(lambda: len(bob.state()['queue']) == 10, 'ten preloaded clips', 60)
     bob.request('session', {'active':True})
@@ -147,20 +155,24 @@ try:
     req = urllib.request.Request(bob.url + '/api/video/' + current['id'], headers={'x-clipcrop-token':bob.token,'Range':'bytes=0-15'})
     with urllib.request.urlopen(req) as response:
         assert response.status == 206 and len(response.read()) == 16
-    result = bob.request('rate', {'id':current['id'],'score':5})
-    assert result['seeders'] == 1 and result['reward_per_seeder'] == 5
-    wait_for(lambda: abs(alice.state()['balance'] - 105) < .000001, 'lone seeder credited')
-    rated = next(row for row in alice.state()['library'] if row['clip']['id'] == current['id'])
-    assert rated['points_earned'] == rated['average_rating'] == 5 and rated['rating_count'] == 1
-    assert bob.state()['balance'] == 95 and bob.state()['temporary_seeds'] == 1
-    wait_for(lambda: len(bob.state()['queue']) == 10, 'queue refills after rating')
-    assert_http_error(lambda: bob.request('rate', {'id':current['id'],'score':5}))
+    # Unconfigured applications cannot create paid ratings or mutate a balance.
+    before = bob.state()
+    assert_http_error(lambda: bob.request('rate', {'id':current['id'], 'score':5}))
+    assert bob.state()['queue'][0]['id'] == current['id']
+    assert bob.state()['crypto']['balance_units'] == '0'
+    # Free skips still produce signed, persistent peer history.
+    result = bob.request('rate', {'id':current['id'], 'score':0})
+    assert result['score'] == 0 and result['reward_per_seeder'] == 0
+    assert bob.state()['temporary_seeds'] == 0
+    wait_for(lambda: len(bob.state()['queue']) == 10, 'queue refills after skip')
+    assert_http_error(lambda: bob.request('rate', {'id':current['id'], 'score':0}))
     # Identical bytes from another user join the same deterministic swarm.
     promoted = bob.upload(by_hash[current['id']])
     assert promoted['duplicate'] and promoted['clip']['info_hash'] == current['info_hash']
-    assert bob.state()['temporary_seeds'] == 0 and bob.state()['library'][0]['seeding']
+    assert bob.state()['library'][0]['seeding']
     promoted_row = bob.state()['library'][0]
-    assert promoted_row['average_rating'] == 5 and promoted_row['rating_count'] == 1 and promoted_row['points_earned'] == 0
+    assert promoted_row['average_rating'] is None and promoted_row['rating_count'] == 0
+    assert 'points_earned' not in promoted_row
     bob.upload(by_hash[current['id']])
     assert bob.state()['library'][0]['added_at_ms'] == promoted_row['added_at_ms']
     bob.request('session', {'active':False})
@@ -171,7 +183,7 @@ try:
     wait_for(lambda: len(charlie.state()['peers']) == 2, 'three peer swarm')
     wait_for(lambda: len(charlie.state()['queue']) >= 1, 'third peer has ready clip')
     charlie.request('session', {'active':True})
-    # Pass other clips free until the duplicate clip is reached.
+    # Pass other clips free until the shared duplicate clip is reached.
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
         ready = charlie.state()['queue']
@@ -180,24 +192,25 @@ try:
         chosen = ready[0]
         if chosen['id'] == current['id']:
             break
-        charlie.request('rate', {'id':chosen['id'],'score':0})
+        charlie.request('rate', {'id':chosen['id'], 'score':0})
     else:
         raise AssertionError('Shared duplicate clip never entered queue')
-    result = charlie.request('rate', {'id':current['id'],'score':5})
-    assert result['seeders'] == 2, result
-    assert abs(result['reward_per_seeder'] - 3.726779) < .000001, result
-    wait_for(lambda: abs(alice.state()['balance'] - 108.726779) < .000001, 'multiple seeder payout Alice')
-    wait_for(lambda: abs(bob.state()['balance'] - 98.726779) < .000001, 'multiple seeder payout Bob')
-    assert charlie.state()['balance'] == 95
-    for client, points in [(alice, 8.726779), (bob, 3.726779)]:
-        rated = next(row for row in client.state()['library'] if row['clip']['id'] == current['id'])
-        assert rated['average_rating'] == 5 and rated['rating_count'] == 2
-        assert abs(rated['points_earned'] - points) < .000001
-    # Other clips were only skipped and must remain unrated.
-    assert all(row['average_rating'] is None and row['rating_count'] == 0 and row['points_earned'] == 0 for row in alice.state()['library'] if row['clip']['id'] != current['id'])
+    assert_http_error(lambda: charlie.request('rate', {'id':current['id'], 'score':5}))
+    result = charlie.request('rate', {'id':current['id'], 'score':0})
+    assert result['reward_per_seeder'] == 0
+    assert charlie.state()['crypto']['balance_units'] == '0'
+    # Skips never create a rating or earnings, regardless of the seeder count.
+    for client in (alice, bob):
+        assert all(row['average_rating'] is None and row['rating_count'] == 0 and 'points_earned' not in row for row in client.state()['library'])
     charlie.request('session', {'active':False})
     assert charlie.state()['temporary_seeds'] == 0
-    # Restart preserves wallet, identity, watched history and permanent seeding.
+    # Signed free-skip histories propagate through the real mesh.
+    def peer_has_skips():
+        peer_receipts = json.loads((alice.root / 'state.json').read_text())['receipts']
+        senders = {receipt['payload']['sender'] for receipt in peer_receipts}
+        return bob.identity in senders and charlie.identity in senders
+    wait_for(peer_has_skips, 'peer accepts signed skip histories', 60)
+    # Restart preserves identity, watched history and permanent seeding after relocation.
     bob_identity = bob.identity
     bob.stop()
     moved_root = WORK / "Bob-moved"
@@ -205,121 +218,40 @@ try:
     bob.root = moved_root
     bob.start()
     assert bob.identity == bob_identity
-    assert abs(bob.state()['balance'] - 98.726779) < .000001
+    assert bob.state()['crypto']['balance_units'] == '0'
+    assert not bob.state()['crypto']['configured']
     assert len(bob.state()['library']) == 1 and bob.state()['library'][0]['seeding']
     restored = bob.state()['library'][0]
     assert restored['added_at_ms'] == promoted_row['added_at_ms']
-    assert restored['average_rating'] == 5 and restored['rating_count'] == 2
-    assert abs(restored['points_earned'] - 3.726779) < .000001
+    assert restored['average_rating'] is None and restored['rating_count'] == 0
     wait_for(lambda: bool(bob.state()['queue']), 'queue starts again after restart')
     assert all(item['id'] != current['id'] for item in bob.state()['queue'])
+    watched = json.loads((bob.root / 'state.json').read_text())['watched']
+    assert current['id'] in watched
 
-    # Rejected wagers leave both the wallet and the last roll untouched.
+    # The old floating-point wager endpoint must never generate local randomness.
     before_roll = bob.state()
-    for wager in [0, -1, before_roll['balance'] + 1, .0000001]:
-        assert_http_error(lambda wager=wager: bob.request('roll', {'wager':wager}))
+    for payload in ({'wager':0}, {'wager':-1}, {'wager':1}, {'wager':.000001}, {}, {'wager':'1'}, {'wager':1,'multiplier':9}, {'transaction_hash':'invalid'}):
+        assert_http_error(lambda payload=payload: bob.request('roll', payload))
         unchanged = bob.state()
-        assert unchanged['balance'] == before_roll['balance']
-        assert unchanged['roll'] == before_roll['roll']
-    assert_http_error(lambda: bob.request('roll', {}))
-    assert_http_error(lambda: bob.request('roll', {'wager':'1'}))
-
-    # Exercise real random draws. Core tests exhaust all 1023 tickets; here small
-    # wagers let the HTTP path reach loss, missing-tier, and watched/owned playback.
-    # A tier-5 draw has probability 16/1023; 500 attempts keep failure below 0.04%.
-    wallet = Decimal(str(before_roll['balance']))
-    wager = Decimal('.001')
-    seen_zero = seen_missing = seen_owned = False
-    roll_ids = set()
-    for _ in range(500):
-        result = bob.request('roll', {'wager':float(wager)})
-        multiplier = result['multiplier']
-        assert isinstance(multiplier, int) and 0 <= multiplier <= 9, result
-        assert Decimal(str(result['wager'])) == wager, result
-        assert Decimal(str(result['payout'])) == wager * multiplier, result
-        wallet += wager * (multiplier - 1)
-        assert Decimal(str(result['balance'])) == wallet, result
-        assert result['id'] not in roll_ids, 'A new roll reused an existing receipt'
-        roll_ids.add(result['id'])
-        assert bob.state()['roll']['id'] == result['id']
-        if multiplier == 0:
-            assert result['clip'] is None, result
-            seen_zero = True
-        elif multiplier == 5:
-            # Bob rated this clip before promoting it: both watched and owned
-            # content must be eligible, even though Rate excludes it.
-            playable = wait_for(lambda: bob.state()['roll']['clip'], 'roll clip becomes playable')
-            assert playable['id'] == current['id'], playable
-            req = urllib.request.Request(bob.url + '/api/video/' + playable['id'], headers={'x-clipcrop-token':bob.token, 'Range':'bytes=0-15'})
-            with urllib.request.urlopen(req) as response:
-                assert response.status == 206 and len(response.read()) == 16
-            seen_owned = True
-        else:
-            assert result['clip'] is None and result['message'], result
-            seen_missing = True
-        if seen_zero and seen_missing and seen_owned:
-            break
-    assert seen_zero and seen_missing and seen_owned, 'Random roll sampling did not reach all integration cases; rerun the smoke test'
-    after_roll = bob.state()
-    assert Decimal(str(after_roll['balance'])) == wallet
-    assert after_roll['temporary_seeds'] == 0, 'Roll unexpectedly started temporary rating seeds'
-    rolled_library = next(row for row in after_roll['library'] if row['clip']['id'] == current['id'])
-    assert rolled_library['rating_count'] == 2 and rolled_library['average_rating'] == 5
-    assert all(item['id'] != current['id'] for item in after_roll['queue'])
-
-    # Gossip validates the roll chain, then accepts a rating following that chain.
-    def peer_has_rolls():
-        saved = json.loads((alice.root / 'state.json').read_text())
-        return roll_ids.issubset({receipt['id'] for receipt in saved['receipts']})
-    wait_for(peer_has_rolls, 'peer accepts mixed rating and roll history', 60)
+        assert unchanged['crypto']['balance_units'] == '0'
+        assert unchanged['roll'] == before_roll['roll'] is None
+    assert not any(receipt['payload'].get('roll') for receipt in json.loads((bob.root / 'state.json').read_text())['receipts'])
+    # A new free skip still appends to the signed history after restart.
     bob.request('session', {'active':True})
-    next_clip = wait_for(lambda: bob.state()['queue'], 'clip ready for rating after rolls')[0]
-    alice_balance = alice.state()['balance']
-    bob.request('rate', {'id':next_clip['id'], 'score':1})
-    wallet -= 1
-    wait_for(lambda: abs(alice.state()['balance'] - alice_balance - 1) < .000001, 'peer accepts rating after roll receipts')
+    next_clip = wait_for(lambda: bob.state()['queue'], 'clip ready after restart')[0]
+    bob.request('rate', {'id':next_clip['id'], 'score':0})
     bob.request('session', {'active':False})
-    assert Decimal(str(bob.state()['balance'])) == wallet
     bob.stop()
     bob.start()
-    assert Decimal(str(bob.state()['balance'])) == wallet, 'Roll wallet did not survive restart'
     assert bob.identity == bob_identity
-
-    # Charlie watched the tier-5 clip, ended Rate, and never uploaded it. Roll
-    # must fetch it again from a peer using its separate validated download cache.
-    charlie_before = charlie.state()
-    charlie_watched = json.loads((charlie.root / 'state.json').read_text())['watched']
-    assert current['id'] in charlie_watched
-    assert not any(row['clip']['id'] == current['id'] for row in charlie_before['library'])
-    clip_filename = f"{current['id']}.{current['extension']}"
-    assert not (charlie.root / 'cache' / clip_filename).exists()
-    assert not (charlie.root / 'roll-cache' / clip_filename).exists()
-    for _ in range(500):
-        remote_roll = charlie.request('roll', {'wager':.001})
-        if remote_roll['multiplier'] == 5:
-            break
-    else:
-        raise AssertionError('Random roll sampling did not reach watched remote tier-5 playback; rerun the smoke test')
-    remote_clip = wait_for(lambda: charlie.state()['roll']['clip'], 'watched roll clip downloads from a peer', 60)
-    assert remote_clip['id'] == current['id'], remote_clip
-    roll_cache = charlie.root / 'roll-cache' / clip_filename
-    assert roll_cache.is_file(), 'Roll did not prepare its separate cache file'
-    assert hashlib.sha256(roll_cache.read_bytes()).hexdigest() == current['id']
-    req = urllib.request.Request(charlie.url + '/api/video/' + current['id'], headers={'x-clipcrop-token':charlie.token})
-    with urllib.request.urlopen(req) as response:
-        assert response.status == 200
-        assert hashlib.sha256(response.read()).hexdigest() == current['id']
-    charlie_after = charlie.state()
-    assert charlie_after['roll']['id'] == remote_roll['id']
-    assert charlie_after['library'] == charlie_before['library']
-    assert charlie_after['temporary_seeds'] == charlie_before['temporary_seeds'] == 0
-    assert not charlie_after['session']
-    assert json.loads((charlie.root / 'state.json').read_text())['watched'] == charlie_watched
+    assert bob.state()['crypto']['balance_units'] == '0' and bob.state()['roll'] is None
+    assert next_clip['id'] in json.loads((bob.root / 'state.json').read_text())['watched']
 
     # Duplicate-profile lock prevents simultaneous spending from one profile.
-    duplicate = subprocess.run([str(BINARY),'--headless','--data-dir',str(bob.root)], capture_output=True, text=True, timeout=5)
+    duplicate = subprocess.run([str(BINARY),'--headless','--data-dir',str(bob.root)], env=ENVIRONMENT, capture_output=True, text=True, timeout=5)
     assert duplicate.returncode != 0 and 'already open' in duplicate.stderr
-    print('PASS: real three-peer mesh,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,zero passes,100-point starts,lone/multiple payouts,dedup,promotion,session cleanup,restart,portable profile relocation,roll wager validation and payouts,watched/owned roll playback,validated watched remote roll downloads,mixed roll/rating gossip,roll wallet persistence,and profile lock.')
+    print('PASS: real three-peer mesh,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,free signed skips,dedup,seeding,session cleanup,restart,portable profile relocation,no initial token grants,no paid ratings without chain payment,no local RNG rolls,skip gossip,and profile lock.')
     print('Integration logs:', WORK)
 finally:
     for client in reversed(PROCESSES):
