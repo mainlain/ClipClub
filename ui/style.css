@@ -278,3 +278,17 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
 .session-recovery { margin-top: 16px; }
 .session-recovery .button { margin-top: 10px; }
 #rating-session-error { color: #a34427; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+
+.wallet-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0; }
+.browser-wallet-option { margin-top: 22px; }
+.wallet-dialog { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto; color: var(--ink); background: var(--paper); padding: 24px; }
+.wallet-dialog h2 { font: 400 24px/1.3 Georgia, serif; margin: 0; }
+.wallet-dialog p { color: var(--muted); }
+.wallet-dialog .dialog-heading { display: flex; gap: 20px; justify-content: space-between; align-items: center; }
+.wallet-dialog select { width: 100%; font: inherit; font-size: 12px; color: var(--ink); padding: 11px 12px; border: 1px solid var(--line); border-radius: 4px; background: #f3f5ef; }
+.wallet-address { display: block; font-size: 12px; overflow-wrap: anywhere; color: var(--green); }
+.wallet-dialog .wallet-error { color: #a34427; font-size: 12px; }
+.wallet-review { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 14px; margin: 24px 0; font-size: 12px; line-height: 1.6; }
+.wallet-review dt { color: var(--muted); }
+.wallet-review dd { margin: 0; overflow-wrap: anywhere; }
+.wallet-review code { font-size: 11px; }

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Real ClipClub processes + a disposable local EVM. No public RPC, wallet key,
-// real-chain transaction, or existing profile is used.
+// Real ClipClub processes + a disposable local EVM. No public RPC, real-chain
+// funds, personal wallet key, or existing profile is used. Native mode imports
+// only the disposable EVM rater key and never writes or prints its plaintext.
 // Usage: node scripts/session-integration.mjs [dist/clipclub] [.build/ffmpeg]
+//        node scripts/session-integration.mjs --native-wallet [dist/clipclub] [.build/ffmpeg]
 //        node scripts/session-integration.mjs --fixture-only
 import assert from 'node:assert/strict';
 import {createHash, randomBytes} from 'node:crypto';
@@ -17,7 +19,9 @@ import {compile} from '../contracts/scripts/build.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureOnly = process.argv.includes('--fixture-only');
-const args = process.argv.slice(2).filter(arg => arg !== '--fixture-only');
+const nativeWallet = process.argv.includes('--native-wallet');
+const args = process.argv.slice(2).filter(arg => !['--fixture-only','--native-wallet'].includes(arg));
+const walletPassword = 'disposable integration wallet password';
 const binary = path.resolve(args[0] || path.join(root, 'dist/clipclub'));
 const ffmpeg = path.resolve(args[1] || path.join(root, '.build/ffmpeg'));
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'clipclub-session-e2e-'));
@@ -169,7 +173,22 @@ async function run() {
   await bob.start();
   assert.equal((await bob.state()).population,100);
   await alice.api('wallet', {address: ownerAddress});
-  await bob.api('wallet', {address: raterAddress});
+  if (nativeWallet) {
+    let disposableKey = server.provider.getInitialAccounts()[raterAddress.toLowerCase()].secretKey;
+    await bob.api('wallet/import', {private_key: disposableKey, password: walletPassword});
+    const local = (await bob.state()).crypto.local_wallet;
+    assert.equal(local.exists, true); assert.equal(local.unlocked, true);
+    assert.equal(local.address, raterAddress.toLowerCase());
+    const walletFile = path.join(bob.folder, 'wallet.json');
+    const keystore = fs.readFileSync(walletFile, 'utf8');
+    const backup = JSON.stringify(await bob.api('wallet/backup', {}));
+    assert.ok(!keystore.includes(disposableKey.slice(2)), 'the wallet file must contain an encrypted key');
+    assert.ok(!backup.includes(disposableKey.slice(2)), 'the backup must contain an encrypted key');
+    assert.ok(!keystore.includes(walletPassword) && !backup.includes(walletPassword), 'the password must not be persisted');
+    assert.equal(JSON.parse(backup).address, raterAddress.toLowerCase());
+    if (process.platform !== 'win32') assert.equal(fs.statSync(walletFile).mode & 0o777, 0o600, 'wallet file must be private to its owner');
+    disposableKey = null;
+  } else await bob.api('wallet', {address: raterAddress});
   await charlie.api('wallet',{address:await seeder.getAddress()});
   for (const [client,signer] of [[alice,owner],[charlie,seeder]]) {
     const registration = await client.api('crypto/transaction',{action:'register_seeder'});
@@ -231,6 +250,19 @@ async function run() {
   assert.equal(localReceipts(bob).length, 0);
   assert.equal(await token.balanceOf(raterAddress), 100n * UNIT);
 
+  if (nativeWallet) {
+    assert.equal((await bob.state()).crypto.local_wallet.unlocked, false, 'restarting must lock the key without changing the unpaid draft');
+    await bob.api('wallet/unlock', {password: walletPassword});
+    const cancelled = await bob.api('crypto/transaction', {action: 'rate_session', expected_session_id: draft.id, expected_rating_count: draft.ratings.length, expected_total_units: draft.total_units});
+    assert.ok(cancelled.wallet_approval?.id, 'native preparation must return a review token');
+    await bob.api('wallet/lock', {});
+    await bob.api('wallet/unlock', {password: walletPassword});
+    await assert.rejects(bob.api('wallet/send', {approval_id: cancelled.wallet_approval.id}), /review|expired/i, 'locking invalidates the old approval even after unlocking');
+    assert.equal((await bob.state()).crypto.pending_transaction, null);
+    assert.equal(await token.balanceOf(raterAddress), 100n * UNIT);
+    await bob.api('rating-session/unlock', {});
+    assert.equal((await bob.state()).crypto.rating_session.status, 'draft');
+  }
   const transaction = await bob.api('crypto/transaction', {action: 'rate_session', expected_session_id: draft.id, expected_rating_count: draft.ratings.length, expected_total_units: draft.total_units});
   const commitment = `0x${createHash('sha256').update(bob.identity).digest('hex')}`;
   assert.equal(transaction.data, token.interface.encodeFunctionData('settleSeederRatings', [`0x${draft.id}`, draft.ratings.map(r=>({clipId:`0x${r.clip_id}`,score:r.score,population:r.distribution.population,reward:r.distribution.reward_units,recipients:r.distribution.recipients.map(s=>s.wallet),peers:r.distribution.recipients.map(s=>'0x'+createHash('sha256').update(s.peer).digest('hex'))})), commitment]));
@@ -239,9 +271,22 @@ async function run() {
   assert.equal(BigInt(transaction.chainId), 4326n);
   assert.equal((await bob.state()).crypto.rating_session.status, 'prepared');
   const nonce = await provider.getTransactionCount(raterAddress);
-  const sent = await rater.sendTransaction({to: transaction.to, data: transaction.data, value: BigInt(transaction.value), chainId: 4326n});
-  await bob.api('crypto/pending', {action: 'rate_session', hash: sent.hash, session_id: draft.id});
-  const receipt = await sent.wait(); assert.equal(receipt.status, 1);
+  let sent, receipt;
+  if (nativeWallet) {
+    assert.equal(transaction.wallet_approval.action, 'rate_session');
+    assert.ok(BigInt(transaction.wallet_approval.max_fee_wei) > 0n);
+    sent = await bob.api('wallet/send', {approval_id: transaction.wallet_approval.id});
+    const pending = (await bob.state()).crypto;
+    assert.equal(pending.pending_transaction.hash, sent.hash.toLowerCase(), 'native send must save its hash before returning');
+    assert.equal(pending.rating_session.status, 'submitted');
+    await assert.rejects(bob.api('wallet/send', {approval_id: transaction.wallet_approval.id}), /review|pending|recover/i, 'the approval cannot send twice');
+    receipt = await provider.waitForTransaction(sent.hash);
+  } else {
+    sent = await rater.sendTransaction({to: transaction.to, data: transaction.data, value: BigInt(transaction.value), chainId: 4326n});
+    await bob.api('crypto/pending', {action: 'rate_session', hash: sent.hash, session_id: draft.id});
+    receipt = await sent.wait();
+  }
+  assert.equal(receipt.status, 1);
   assert.equal(await token.balanceOf(raterAddress), 88n * UNIT);
   assert.equal(await token.balanceOf(ownerAddress), 900n*UNIT+perSeederPayout);
   assert.equal(await token.balanceOf(await seeder.getAddress()),perSeederPayout);
@@ -258,6 +303,15 @@ async function run() {
   assert.equal(submitted.rating_session.status, 'submitted');
   assert.equal(submitted.pending_transaction.hash, sent.hash.toLowerCase());
   assert.equal(localReceipts(bob).length, 0);
+  if (nativeWallet) {
+    assert.equal(submitted.local_wallet.exists, true); assert.equal(submitted.local_wallet.unlocked, false);
+    const rebroadcast = await bob.api('wallet/rebroadcast', {});
+    assert.equal(rebroadcast.hash, sent.hash.toLowerCase(), 'locked recovery must reuse exactly the saved signed transaction');
+    const recoveredReceipt = await bob.api('wallet/rpc', {method: 'eth_getTransactionReceipt', params: [sent.hash]});
+    assert.equal(BigInt(recoveredReceipt.status), 1n);
+    assert.equal((await bob.state()).crypto.local_wallet.unlocked, false, 'receipt recovery must not unlock or sign');
+    assert.equal(await provider.getTransactionCount(raterAddress), nonce + 1, 'native replay must never consume another nonce');
+  }
   const confirmation = await bob.api('rating-session/confirm', {transaction_hash: sent.hash});
   assert.equal(confirmation.confirmed, true); assert.equal(confirmation.count, 2);
   assert.equal(confirmation.total_units, '12000000');
@@ -285,6 +339,7 @@ async function run() {
     const row = library.find(item => item.clip.id === rating.clip_id);
     assert.equal(row.average_rating, rating.score); assert.equal(row.rating_count, 1);
   }
+  if (nativeWallet) console.log('PASS: encrypted native wallet import and backup, owner-only keystore, restart lock/unlock, approval invalidation, in-app signing, durable hash recovery and locked exact-transaction replay consume one nonce.');
   console.log('PASS: three real peers, persistent monthly N=100 and MP4 transfers; registered permanent seeder snapshots survive restart; exact Solidity ABI matches Rust; one batch charges only scores while only the excess rewards are minted without prefunding; receipt recovery, gossip and retries preserve every balance.');
 }
 

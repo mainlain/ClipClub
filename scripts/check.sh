@@ -37,7 +37,7 @@ if command -v node >/dev/null 2>&1; then
   while IFS= read -r -d '' script; do
     node --check "$script"
   done < <(find ui -type f -name '*.js' -print0)
-  node --test scripts/library.test.cjs scripts/roll.test.cjs scripts/session.test.cjs scripts/navigation.test.cjs scripts/update.test.cjs
+  node --test scripts/library.test.cjs scripts/roll.test.cjs scripts/session.test.cjs scripts/navigation.test.cjs scripts/update.test.cjs scripts/wallet.test.cjs
 fi
 
 if [[ -d contracts/node_modules ]] && command -v npm >/dev/null 2>&1; then

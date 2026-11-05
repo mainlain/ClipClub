@@ -12,6 +12,7 @@ pub mod rating_distribution;
 mod torrent;
 mod update;
 mod update_install;
+mod wallet;
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::{fs::OpenOptions, path::PathBuf, time::Duration};

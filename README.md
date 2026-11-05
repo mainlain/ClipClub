@@ -6,7 +6,7 @@ The desktop app calculates rewards locally from registered permanent seeder wall
 
 A Rust desktop app for sharing short videos through BitTorrent and paying with **좋아 (✨)**, its Ethereum-compatible ERC-20 token on **MegaETH**. The token uses six decimals and a fireworks logo. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 
-Token balances and payments live on MegaETH. Rolls commit to a future drand quicknet round and settle through MegaETH’s deployed verifier. The source includes the contracts and deployment tools. The mainnet deployment created an initial supply of 1,000,000,000 ✨ for treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. The app defaults to the deployed mainnet contract. Token actions require your wallet approval; sharing and free skips work without a wallet.
+Token balances and payments live on MegaETH. Rolls commit to a future drand quicknet round and settle through MegaETH’s deployed verifier. The source includes the contracts and deployment tools. The mainnet deployment created an initial supply of 1,000,000,000 ✨ for treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. The app defaults to the deployed mainnet contract. Token actions require your approval in the built-in wallet or a connected browser wallet; sharing and free skips work without a wallet.
 
 ## Run
 
@@ -18,7 +18,7 @@ On Apple Silicon macOS, open `dist/clipclub.app`, or run the executable:
 
 On macOS, your profile is stored in `~/Library/Application Support/ClipCrop Points`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-points-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
 
-The profile contains your private peer identity, legacy rating history, settings, watched history, uploaded files, cached videos, and a public-wallet/roll journal. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
+The profile contains your private peer identity, legacy rating history, settings, watched history, uploaded files, cached videos, an encrypted wallet keystore when you create or import a wallet, and a public-wallet/roll journal. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
 
 The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. It does not install a background service.
 
@@ -77,9 +77,13 @@ CLIPCLUB_JOAH_CONTRACT=0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16 \
 ./dist/clipclub
 ```
 
-`6343` selects MegaETH testnet; `4326` selects mainnet, the project default. Testnet requires an explicit contract address and never inherits the mainnet token. Set `CLIPCLUB_JOAH_CONTRACT` to an empty string to disable token configuration. The default RPCs are `https://carrot.megaeth.com/rpc` and `https://mainnet.megaeth.com/rpc`. `CLIPCLUB_MEGAETH_RPC_URL` optionally selects a trusted HTTPS RPC. The app checks its chain ID. The wallet adds the official public RPC; custom backend credentials are never sent to the UI. All peers that exchange paid ratings must configure the same chain and contract. There are no embedded keys, API subscriptions, or automatically funded wallets.
+`6343` selects MegaETH testnet; `4326` selects mainnet, the project default. Testnet requires an explicit contract address and never inherits the mainnet token. Set `CLIPCLUB_JOAH_CONTRACT` to an empty string to disable token configuration. The default RPCs are `https://carrot.megaeth.com/rpc` and `https://mainnet.megaeth.com/rpc`. `CLIPCLUB_MEGAETH_RPC_URL` optionally selects a trusted HTTPS RPC. The app checks its chain ID. The wallet adds the official public RPC; custom backend credentials are never sent to the UI. All peers that exchange paid ratings must configure the same chain and contract. Wallet keys are generated locally or imported by you. There are no embedded shared keys, API subscriptions, or automatically funded wallets.
 
-The native WebView usually has no Ethereum wallet provider. Choose **Open wallet browser** to open this process’s local interface in a browser with an EIP-1193 wallet. Connect there, then approve transactions in that wallet. The app checks the account, target contract, chain, and zero ETH transaction value before asking the wallet to sign. ETH on the selected network pays gas. MegaETH RPC simulation and wallet fee estimation use the actual network; no Ethereum gas constants are hardcoded.
+Choose **Wallet** to create a built-in Ethereum wallet, import a 32-byte private key, or restore an encrypted ClipClub wallet backup. New and imported keys are encrypted with a password of at least 12 characters and stored in your profile. The wallet starts locked after a restart and locks after 15 minutes without wallet activity. Passwords and imported keys are cleared from the form and are never saved in browser storage. Choose **Download encrypted backup** and keep that file and its password safely; there is no password reset or recovery service.
+
+The built-in wallet signs inside the app. Each payment opens a review showing the action, network, sender, token contract, token amount and maximum gas fee. **Approve and send** authorizes that single prepared transaction; **Cancel** leaves the payment unpaid. The app validates the account, configured contract and chain, estimates gas against the selected MegaETH network, and saves the signed transaction before broadcasting. **Retry confirmation** can rebroadcast the same bytes without signing another payment. ETH on the selected network pays gas. The receive address accepts ETH and 좋아 (✨) on MegaETH; sending funds on another network does not make them available here.
+
+The wallet manages one private key per profile and signs the app’s token actions on its configured MegaETH mainnet or testnet. It does not offer seed phrases, arbitrary dapp connections, arbitrary message signing, or a general-purpose transfer screen. Backups use ClipClub’s encrypted keystore format. You can still choose **Settings → Use a browser wallet** and connect an EIP-1193 provider in the wallet browser. Settle queued ratings and confirm pending transactions before changing accounts.
 
 The constructor creates 1,000,000,000 ✨ once for the selected treasury. There is no public mint function or per-profile grant. Existing points receipts remain compatible for historical clip ratings, but cannot pay for anything or redeem tokens. Initial token distribution is an operator decision; the app does not assume a conversion rate or a faucet.
 
@@ -180,8 +184,9 @@ This runs formatting when `rustfmt` is installed, all backend targets/tests, a d
 | --- | --- |
 | `src/main.rs` / `src/app.rs` | Desktop lifecycle, local API, prefetch and rating sessions |
 | `src/core.rs` | Models, durable state, signed rating receipts and legacy receipt compatibility |
-| `src/crypto.rs` | MegaETH RPC, receipt validation, unsigned wallet transactions and roll recovery |
+| `src/crypto.rs` | MegaETH RPC, native transaction approvals, receipt validation and roll recovery |
 | `contracts/` | 좋아 ERC-20, drand rolls, rating payments, deployment tooling and EVM tests |
+| `src/wallet.rs` | Encrypted private-key storage, lock/unlock, backups and transaction signing |
 | `src/media.rs` | Bounded media validation and portable validator installation |
 | `src/torrent.rs` | Deterministic torrent creation and BitTorrent sessions |
 | `src/peer.rs` | Identity, discovery, authenticated gossip and presence |
@@ -194,3 +199,5 @@ clipclub's original source is MIT licensed. Third-party components retain their 
 Run `bash scripts/check.sh` for Rust tests, desktop compilation, UI syntax, and Node behavior tests. With contract dependencies installed (`npm ci --prefix contracts`), it also runs the Solidity compilation and local EVM tests. `npm --prefix contracts run check:verifier` optionally checks the deployed MegaETH verifier through the public RPC without signing anything.
 
 `python3 scripts/integration.py` exercises real local peer discovery, media validation, transfers, HTTP protection, free skips, restarts, profile relocation, and rejection of the retired local-wager API. `python3 scripts/package-smoke.py dist/clipclub` checks a packaged executable’s embedded validator and profile persistence. These use no funded wallets. Contract tests cover every monetary outcome, invalid proofs, timing, replay, deployment guards, and supply invariants. Rust mock-RPC tests cover receipt/chain validation, canonical blocks, ABI encoding, and pending-roll recovery; wallet tests cover exact precision, session checkout, and confirmation retries. `node scripts/session-integration.mjs dist/clipclub` exercises the complete queued-rating checkout against a disposable local EVM and three real app processes; it never contacts MegaETH or spends real funds. A funded testnet rehearsal is still required before operating a live token.
+
+`node scripts/session-integration.mjs --native-wallet dist/clipclub` runs that same local-chain checkout using the built-in wallet. It verifies encrypted storage and backups, password unlock after restart, approval invalidation, local signing, and recovery while locked without consuming a second transaction nonce.

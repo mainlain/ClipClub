@@ -1,4 +1,4 @@
-//! Noncustodial MegaETH adapter. The RPC verifies receipts; only the user's wallet signs.
+//! MegaETH adapter with encrypted local signing and optional browser wallets.
 use crate::core::ChainPayment;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,25 @@ struct Journal {
     rating_session: Option<RatingSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_rating_session: Option<CompletedRatingSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_submission: Option<LocalSubmission>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalSubmission {
+    hash: String,
+    raw: String,
+}
+
+struct LocalApproval {
+    id: String,
+    created: Instant,
+    wallet: String,
+    data: Vec<u8>,
+    nonce: u64,
+    gas_limit: u64,
+    gas_price: u128,
+    pending: PendingTransaction,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionRating {
@@ -270,8 +289,10 @@ pub struct Crypto {
     journal: Mutex<Journal>,
     cache: Mutex<Option<(Instant, Value)>>,
     operation: Mutex<()>,
+    vault: std::sync::Arc<std::sync::Mutex<crate::wallet::WalletVault>>,
+    approval: Mutex<Option<LocalApproval>>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionRequest {
     action: String,
@@ -291,6 +312,246 @@ fn selected_contract(chain_id: u64, configured: Option<&str>) -> Result<Option<S
         .transpose()
 }
 impl Crypto {
+    async fn vault_task<T, F>(&self, task: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut crate::wallet::WalletVault) -> Result<T> + Send + 'static,
+    {
+        let vault = self.vault.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut vault = vault
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Wallet storage is unavailable; restart the app"))?;
+            task(&mut vault)
+        })
+        .await?
+    }
+    async fn local_status(&self) -> Value {
+        self.vault_task(|vault| Ok(vault.status()))
+            .await
+            .unwrap_or_else(
+                |error| json!({"exists":true,"unlocked":false,"error":error.to_string()}),
+            )
+    }
+    async fn ensure_wallet_switchable(&self, target: Option<&str>) -> Result<()> {
+        let journal = self.journal.lock().await;
+        ensure!(
+            journal.wallet.as_deref() == target
+                || (journal.pending_transaction.is_none() && journal.rating_session.is_none()),
+            "Settle or cancel the rating session and recover pending transactions before switching wallets"
+        );
+        Ok(())
+    }
+    pub async fn create_local_wallet(
+        &self,
+        password: zeroize::Zeroizing<String>,
+        private_key: Option<zeroize::Zeroizing<String>>,
+        backup: Option<Value>,
+    ) -> Result<Value> {
+        let _guard = self.operation.lock().await;
+        self.ensure_wallet_switchable(None).await?;
+        let address = self
+            .vault_task(move |vault| match (private_key, backup) {
+                (Some(key), None) => vault.import(&key, &password),
+                (None, Some(backup)) => vault.restore(backup, &password),
+                (None, None) => vault.create(&password),
+                _ => bail!("Choose one wallet import method"),
+            })
+            .await?;
+        self.select_wallet(Some(address.clone())).await?;
+        Ok(json!({"address":address}))
+    }
+    pub async fn unlock_local_wallet(&self, password: zeroize::Zeroizing<String>) -> Result<Value> {
+        let _guard = self.operation.lock().await;
+        let target = self.vault_task(|vault| Ok(vault.address())).await?;
+        self.ensure_wallet_switchable(target.as_deref()).await?;
+        let address = self
+            .vault_task(move |vault| vault.unlock(&password))
+            .await?;
+        self.select_wallet(Some(address.clone())).await?;
+        Ok(json!({"address":address}))
+    }
+    pub async fn lock_local_wallet(&self) -> Result<()> {
+        let _guard = self.operation.lock().await;
+        self.vault_task(|vault| {
+            vault.lock();
+            Ok(())
+        })
+        .await?;
+        *self.approval.lock().await = None;
+        *self.cache.lock().await = None;
+        Ok(())
+    }
+    pub async fn expire_local_wallet(&self) {
+        let _guard = self.operation.lock().await;
+        if self.local_status().await["unlocked"] != true {
+            *self.approval.lock().await = None;
+        }
+    }
+    pub async fn wallet_backup(&self) -> Result<Value> {
+        self.vault_task(|vault| vault.encrypted_backup()).await
+    }
+    pub async fn wallet_rpc(&self, method: &str, params: Value) -> Result<Value> {
+        ensure!(
+            method == "eth_getTransactionReceipt",
+            "Unsupported wallet RPC method"
+        );
+        let values = params.as_array().context("Invalid wallet RPC parameters")?;
+        ensure!(values.len() == 1, "Expected one transaction hash");
+        hash32(values[0].as_str().context("Invalid transaction hash")?)?;
+        self.check_chain().await?;
+        self.rpc(method, params).await
+    }
+    pub async fn send_local_transaction(&self, approval_id: &str) -> Result<Value> {
+        let _guard = self.operation.lock().await;
+        let mut approval = self.approval.lock().await;
+        let prepared = approval
+            .as_ref()
+            .context("Review the transaction again before approving")?;
+        ensure!(
+            prepared.id == approval_id && prepared.created.elapsed() < Duration::from_secs(120),
+            "Transaction review expired; review it again"
+        );
+        let mut journal = self.journal.lock().await.clone();
+        ensure!(
+            journal.pending_transaction.is_none(),
+            "Recover the pending transaction first"
+        );
+        ensure!(
+            journal.wallet.as_deref() == Some(&prepared.wallet),
+            "Selected wallet changed; review the transaction again"
+        );
+        if prepared.pending.action == "rate_session" {
+            ensure!(
+                journal
+                    .rating_session
+                    .as_ref()
+                    .is_some_and(|session| session.status == "prepared"
+                        && Some(&session.id) == prepared.pending.session_id.as_ref()),
+                "Rating session changed; review it again"
+            );
+        } else {
+            ensure!(
+                journal
+                    .rating_session
+                    .as_ref()
+                    .is_none_or(|session| session.status == "draft"),
+                "Finish the prepared rating session first"
+            );
+        }
+        self.check_chain().await?;
+        let nonce = self
+            .rpc(
+                "eth_getTransactionCount",
+                json!([prepared.wallet, "pending"]),
+            )
+            .await?;
+        ensure!(
+            parse_hex_u64(nonce.as_str().context("Invalid account nonce")?)? == prepared.nonce,
+            "Account nonce changed; review the transaction again"
+        );
+        let prepared = approval.take().unwrap();
+        drop(approval);
+        let chain_id = self.chain_id;
+        let contract = self.contract()?.to_owned();
+        let expected_wallet = prepared.wallet.clone();
+        let signed = self
+            .vault_task(move |vault| {
+                ensure!(
+                    vault.address().as_deref() == Some(&expected_wallet),
+                    "The local wallet changed"
+                );
+                vault.sign_legacy(
+                    chain_id,
+                    prepared.nonce,
+                    prepared.gas_price,
+                    prepared.gas_limit,
+                    &contract,
+                    alloy_primitives::U256::ZERO,
+                    &prepared.data,
+                )
+            })
+            .await?;
+        let mut pending = prepared.pending;
+        pending.hash = signed.hash.clone();
+        pending.validate()?;
+        if pending.action == "rate_session" {
+            journal
+                .rating_session
+                .as_mut()
+                .context("Missing rating session")?
+                .status = "submitted".into();
+        }
+        journal.pending_transaction = Some(pending);
+        journal.local_submission = Some(LocalSubmission {
+            hash: signed.hash,
+            raw: signed.raw,
+        });
+        // Durably retain the exact signed bytes before the first network send.
+        // A crash or lost RPC response can only retry the same hash and nonce.
+        self.save(&journal)?;
+        *self.journal.lock().await = journal.clone();
+        *self.cache.lock().await = None;
+        self.broadcast_local(journal.local_submission.as_ref().unwrap())
+            .await
+    }
+    async fn broadcast_local(&self, submission: &LocalSubmission) -> Result<Value> {
+        match self
+            .rpc("eth_sendRawTransaction", json!([submission.raw]))
+            .await
+        {
+            Ok(hash)
+                if hash
+                    .as_str()
+                    .is_some_and(|hash| hash.eq_ignore_ascii_case(&submission.hash)) =>
+            {
+                Ok(json!({"hash":submission.hash}))
+            }
+            Ok(_) => Ok(
+                json!({"hash":submission.hash,"broadcast_error":"RPC returned a different hash. Retry confirmation for the saved signed transaction."}),
+            ),
+            Err(error) => Ok(
+                json!({"hash":submission.hash,"broadcast_error":format!("Broadcast not confirmed: {error}. Retry the saved transaction.")}),
+            ),
+        }
+    }
+    pub async fn rebroadcast_local_transaction(&self) -> Result<Value> {
+        let _guard = self.operation.lock().await;
+        self.check_chain().await?;
+        let journal = self.journal.lock().await.clone();
+        let Some(submission) = journal.local_submission.as_ref() else {
+            let pending = journal
+                .pending_transaction
+                .as_ref()
+                .context("No pending transaction to confirm")?;
+            return Ok(json!({"hash":pending.hash}));
+        };
+        crate::wallet::validate_signed_transaction(
+            &submission.raw,
+            &submission.hash,
+            self.chain_id,
+            journal
+                .wallet
+                .as_deref()
+                .context("Saved transaction has no wallet")?,
+            self.contract()?,
+        )?;
+        ensure!(
+            journal
+                .pending_transaction
+                .as_ref()
+                .is_some_and(|pending| pending.hash == submission.hash),
+            "No matching pending local transaction"
+        );
+        if !self
+            .rpc("eth_getTransactionReceipt", json!([submission.hash]))
+            .await?
+            .is_null()
+        {
+            return Ok(json!({"hash":submission.hash}));
+        }
+        self.broadcast_local(submission).await
+    }
     pub async fn selected_wallet(&self) -> Option<String> {
         self.journal.lock().await.wallet.clone()
     }
@@ -330,7 +591,25 @@ impl Crypto {
             "megaeth-{chain_id}-{}.json",
             contract.as_deref().unwrap_or("unconfigured")
         ));
-        let journal = load_journal(&path)?;
+        let mut journal = load_journal(&path)?;
+        if let Some(submission) = &journal.local_submission {
+            crate::wallet::validate_signed_transaction(
+                &submission.raw,
+                &submission.hash,
+                chain_id,
+                journal
+                    .wallet
+                    .as_deref()
+                    .context("Saved transaction has no wallet")?,
+                contract
+                    .as_deref()
+                    .context("Saved transaction has no contract")?,
+            )?;
+        }
+        let vault = crate::wallet::WalletVault::open(root)?;
+        if journal.wallet.is_none() {
+            journal.wallet = vault.address();
+        }
         Ok(Self {
             chain_id,
             contract,
@@ -341,6 +620,8 @@ impl Crypto {
             journal: Mutex::new(journal),
             cache: Mutex::new(None),
             operation: Mutex::new(()),
+            vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
+            approval: Mutex::new(None),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(12))
                 .redirect(reqwest::redirect::Policy::none())
@@ -363,6 +644,9 @@ impl Crypto {
     pub async fn set_wallet(&self, wallet: Option<String>) -> Result<()> {
         let _guard = self.operation.lock().await;
         let wallet = wallet.map(|w| address(&w)).transpose()?;
+        self.select_wallet(wallet).await
+    }
+    async fn select_wallet(&self, wallet: Option<String>) -> Result<()> {
         let mut j = self.journal.lock().await;
         let mut next = j.clone();
         if next.wallet != wallet {
@@ -372,12 +656,14 @@ impl Crypto {
             );
             next.roll = None;
             next.completed_rating_session = None;
+            next.local_submission = None;
         }
         next.wallet = wallet;
         self.save(&next)?;
         *j = next;
         drop(j);
         *self.cache.lock().await = None;
+        *self.approval.lock().await = None;
         Ok(())
     }
     pub async fn set_pending(&self, pending: Option<PendingTransaction>) -> Result<()> {
@@ -431,6 +717,9 @@ impl Crypto {
             );
         }
         next.pending_transaction = pending;
+        if next.pending_transaction.is_none() {
+            next.local_submission = None;
+        }
         self.save(&next)?;
         *journal = next;
         drop(journal);
@@ -557,6 +846,7 @@ impl Crypto {
         *journal = next;
         drop(journal);
         *self.cache.lock().await = None;
+        *self.approval.lock().await = None;
         Ok(())
     }
     pub async fn cancel_rating_preparation(&self) -> Result<()> {
@@ -578,6 +868,7 @@ impl Crypto {
         *journal = next;
         drop(journal);
         *self.cache.lock().await = None;
+        *self.approval.lock().await = None;
         Ok(())
     }
     fn save(&self, journal: &Journal) -> Result<()> {
@@ -793,7 +1084,9 @@ impl Crypto {
         if let Some((at, value)) = self.cache.lock().await.as_ref()
             && at.elapsed() < Duration::from_secs(2)
         {
-            return value.clone();
+            let mut value = value.clone();
+            value["local_wallet"] = self.local_status().await;
+            return value;
         }
         let (wallet, pending_transaction, rating_session) = {
             let journal = self.journal.lock().await;
@@ -803,7 +1096,8 @@ impl Crypto {
                 journal.rating_session.clone(),
             )
         };
-        let mut state = json!({"name":"좋아","symbol":"✨","decimals":6,"chain_id":self.chain_id,"chain_hex":format!("0x{:x}",self.chain_id),"chain_name":if self.chain_id==4326 {"MegaETH"} else {"MegaETH Testnet"},"rpc_url":self.public_rpc,"explorer_url":self.explorer,"contract":self.contract,"configured":self.contract.is_some(),"wallet":wallet,"balance_units":"0","total_supply_units":"0","rating_credit_units":"0","total_rating_minted_units":"0","error":null});
+        let mut state = json!({"name":"좋아","symbol":"✨","decimals":6,"chain_id":self.chain_id,"chain_hex":format!("0x{:x}",self.chain_id),"chain_name":if self.chain_id==4326 {"MegaETH"} else {"MegaETH Testnet"},"rpc_url":self.public_rpc,"explorer_url":self.explorer,"contract":self.contract,"configured":self.contract.is_some(),"wallet":wallet,"balance_units":"0","native_balance_wei":"0","total_supply_units":"0","rating_credit_units":"0","total_rating_minted_units":"0","error":null});
+        state["local_wallet"] = self.local_status().await;
         state["pending_transaction"] =
             serde_json::to_value(&pending_transaction).unwrap_or(Value::Null);
         state["rating_session"] = serde_json::to_value(&rating_session).unwrap_or(Value::Null);
@@ -841,6 +1135,12 @@ impl Crypto {
                 state["total_supply_units"] = decimal_word(&supply[..64])?.into();
                 state["total_rating_minted_units"] = decimal_word(&rating_minted)?.into();
                 if let Some(wallet) = wallet.as_ref() {
+                    if state["local_wallet"]["address"].as_str() == Some(wallet) {
+                        let balance = self
+                            .rpc("eth_getBalance", json!([wallet, "latest"]))
+                            .await?;
+                        state["native_balance_wei"] = parse_rpc_u256(&balance)?.to_string().into();
+                    }
                     let balance = self
                         .call("balanceOf(address)", &address_word(&wallet)?)
                         .await?;
@@ -956,6 +1256,13 @@ impl Crypto {
         self.check_chain().await?;
         let wallet = self.wallet().await?;
         let journal = self.journal.lock().await.clone();
+        let local = self.local_status().await;
+        let native = local["address"].as_str() == Some(wallet.as_str());
+        ensure!(
+            !native || local["unlocked"] == true,
+            "Unlock your wallet before reviewing a transaction"
+        );
+        let request = input.clone();
         ensure!(
             input.action == "rate_session"
                 || (input.expected_session_id.is_none()
@@ -1053,7 +1360,62 @@ impl Crypto {
         };
         let transaction = json!({"from":wallet,"to":self.contract()?,"data":data,"value":"0x0"});
         // MegaETH has a distinct storage gas model. Simulate with the actual RPC and let the wallet estimate fees.
-        self.rpc("eth_estimateGas", json!([transaction])).await?;
+        let gas = self.rpc("eth_estimateGas", json!([transaction])).await?;
+        let local_approval = if native {
+            let (price, nonce, balance) = tokio::try_join!(
+                self.rpc("eth_gasPrice", json!([])),
+                self.rpc("eth_getTransactionCount", json!([wallet, "pending"])),
+                self.rpc("eth_getBalance", json!([wallet, "pending"]))
+            )?;
+            let estimate = parse_hex_u64(gas.as_str().context("Invalid gas estimate")?)?;
+            ensure!(estimate > 0, "Invalid zero gas estimate");
+            let gas_limit = estimate
+                .checked_add(estimate.div_ceil(5))
+                .context("Gas estimate is too large")?;
+            let gas_price = u128::from_str_radix(
+                price
+                    .as_str()
+                    .context("Invalid gas price")?
+                    .strip_prefix("0x")
+                    .context("Invalid gas price")?,
+                16,
+            )?;
+            ensure!(gas_price > 0, "Invalid zero gas price");
+            let max_fee =
+                alloy_primitives::U256::from(gas_limit) * alloy_primitives::U256::from(gas_price);
+            ensure!(
+                parse_rpc_u256(&balance)? >= max_fee,
+                "Your wallet needs more ETH on this network for the estimated gas fee"
+            );
+            let pending = PendingTransaction {
+                action: request.action.clone(),
+                hash: String::new(),
+                clip_id: request.clip_id,
+                score: request.score,
+                roll_id: request.roll_id,
+                wager_units: request.wager_units,
+                session_id: (request.action == "rate_session")
+                    .then(|| journal.rating_session.as_ref().unwrap().id.clone()),
+            };
+            Some(LocalApproval {
+                id: hex::encode(rand::random::<[u8; 32]>()),
+                created: Instant::now(),
+                wallet: wallet.clone(),
+                data: hex::decode(
+                    transaction["data"]
+                        .as_str()
+                        .unwrap()
+                        .strip_prefix("0x")
+                        .unwrap(),
+                )?,
+                nonce: parse_hex_u64(nonce.as_str().context("Invalid account nonce")?)?,
+                gas_limit,
+                gas_price,
+                pending,
+            })
+        } else {
+            None
+        };
         if input.action == "rate_session" {
             let mut next = journal;
             next.rating_session
@@ -1066,6 +1428,10 @@ impl Crypto {
         }
         let mut transaction = transaction;
         transaction["chainId"] = format!("0x{:x}", self.chain_id).into();
+        if let Some(approval) = local_approval {
+            transaction["wallet_approval"] = json!({"id":approval.id,"gas_limit":approval.gas_limit.to_string(),"gas_price_wei":approval.gas_price.to_string(),"max_fee_wei":(alloy_primitives::U256::from(approval.gas_limit)*alloy_primitives::U256::from(approval.gas_price)).to_string(),"expires_in_seconds":120,"action":approval.pending.action});
+            *self.approval.lock().await = Some(approval);
+        }
         Ok(transaction)
     }
     async fn receipt(&self, hash: &str) -> Result<Value> {
@@ -1393,6 +1759,14 @@ impl Crypto {
                 roll_id: None,
                 wager_units: None,
             });
+            if next
+                .local_submission
+                .as_ref()
+                .is_some_and(|saved| !saved.hash.eq_ignore_ascii_case(hash))
+            {
+                // A verified wallet replacement supersedes the old signed bytes.
+                next.local_submission = None;
+            }
             self.save(&next)?;
             *self.journal.lock().await = next;
             *self.cache.lock().await = None;
@@ -1620,6 +1994,7 @@ impl Crypto {
         );
         let mut next = snapshot;
         next.pending_transaction = None;
+        next.local_submission = None;
         next.rating_session
             .as_mut()
             .context("Missing submitted session")?
@@ -1627,6 +2002,7 @@ impl Crypto {
         self.save(&next)?;
         *self.journal.lock().await = next;
         *self.cache.lock().await = None;
+        *self.approval.lock().await = None;
         Ok(())
     }
     pub async fn rating_payment(
@@ -1836,6 +2212,29 @@ fn load_journal(path: &Path) -> Result<Journal> {
             );
         }
     }
+    if let Some(submission) = &journal.local_submission {
+        ensure!(
+            journal
+                .pending_transaction
+                .as_ref()
+                .is_some_and(|pending| pending.hash == submission.hash),
+            "Saved signed transaction has no matching pending record"
+        );
+        hash32(&submission.hash)?;
+        let raw = submission
+            .raw
+            .strip_prefix("0x")
+            .context("Invalid saved signed transaction")?;
+        ensure!(
+            !raw.is_empty() && raw.len() <= 900_000 && raw.len().is_multiple_of(2),
+            "Invalid saved signed transaction size"
+        );
+        let raw = hex::decode(raw).context("Invalid saved signed transaction")?;
+        ensure!(
+            format!("{:#x}", alloy_primitives::keccak256(raw)) == submission.hash,
+            "Saved signed transaction hash mismatch"
+        );
+    }
     if let Some(roll) = &journal.roll {
         ensure!(journal.wallet.is_some(), "Saved roll has no wallet");
         word_decimal(&roll.id)?;
@@ -1959,6 +2358,17 @@ fn parse_hex_u64(s: &str) -> Result<u64> {
         16,
     )?)
 }
+fn parse_rpc_u256(value: &Value) -> Result<alloy_primitives::U256> {
+    let text = value.as_str().context("Invalid RPC amount")?;
+    let digits = text.strip_prefix("0x").context("Invalid RPC amount")?;
+    ensure!(
+        !digits.is_empty()
+            && digits.len() <= 64
+            && digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Invalid RPC amount"
+    );
+    Ok(alloy_primitives::U256::from_str_radix(digits, 16)?)
+}
 fn word_decimal(s: &str) -> Result<String> {
     ensure!(
         !s.is_empty()
@@ -2046,6 +2456,7 @@ fn multiply_decimal(s: &str, multiplier: u8) -> Result<String> {
 }
 #[cfg(test)]
 mod tests {
+    include!("native_wallet_tests.rs");
     use super::*;
     use axum::{Json, Router, extract::State, routing::post};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -2071,6 +2482,8 @@ mod tests {
         estimate_error: bool,
         rating_credit: String,
         seeder_peers: BTreeMap<String, String>,
+        nonce: String,
+        send_error: bool,
     }
     #[derive(Clone)]
     struct RpcState {
@@ -2096,11 +2509,30 @@ mod tests {
         if input["method"] == "eth_estimateGas" && f.estimate_error {
             return json!({"jsonrpc":"2.0","id":input["id"],"error":{"message":"Execution reverted"}});
         }
+        if input["method"] == "eth_sendRawTransaction" && f.send_error {
+            return json!({"jsonrpc":"2.0","id":input["id"],"error":{"message":"Broadcast response lost"}});
+        }
         let result = match input["method"].as_str().unwrap() {
             "eth_chainId" => json!(f.chain),
             "eth_getTransactionReceipt" => f.receipt,
             "eth_getBlockByNumber" => json!({"hash":f.canonical_block}),
             "eth_estimateGas" => json!("0x186a0"),
+            "eth_gasPrice" => json!("0x3b9aca00"),
+            "eth_getTransactionCount" => json!(f.nonce),
+            "eth_getBalance" => json!("0xde0b6b3a7640000"),
+            "eth_sendRawTransaction" => json!(format!(
+                "{:#x}",
+                alloy_primitives::keccak256(
+                    hex::decode(
+                        input["params"][0]
+                            .as_str()
+                            .unwrap()
+                            .strip_prefix("0x")
+                            .unwrap()
+                    )
+                    .unwrap()
+                )
+            )),
             "eth_call" => {
                 let data = input["params"][0]["data"].as_str().unwrap();
                 let signature = &data[..10];
@@ -2205,6 +2637,8 @@ mod tests {
                 estimate_error: false,
                 rating_credit: "0".into(),
                 seeder_peers: BTreeMap::new(),
+                nonce: "0x0".into(),
+                send_error: false,
             })),
             requests: Arc::new(StdMutex::new(vec![])),
             balance_read: Arc::new(tokio::sync::Notify::new()),
@@ -2230,9 +2664,14 @@ mod tests {
                 pending_transaction: None,
                 rating_session: None,
                 completed_rating_session: None,
+                local_submission: None,
             }),
             cache: Mutex::new(None),
             operation: Mutex::new(()),
+            vault: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::wallet::WalletVault::open(directory.path()).unwrap(),
+            )),
+            approval: Mutex::new(None),
         });
         Mock {
             crypto,
@@ -3172,6 +3611,7 @@ mod tests {
                 pending_transaction: None,
                 rating_session: None,
                 completed_rating_session: None,
+                local_submission: None,
             })
             .unwrap(),
         )

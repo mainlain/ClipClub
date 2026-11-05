@@ -63,6 +63,33 @@ pub async fn serve(
         .route("/api/crypto/confirm-account", post(confirm_account))
         .route("/api/wallet", post(wallet))
         .route("/api/wallet/browser", post(wallet_browser))
+        .route(
+            "/api/wallet/create",
+            post(wallet_create).layer(DefaultBodyLimit::max(32_768)),
+        )
+        .route(
+            "/api/wallet/import",
+            post(wallet_import).layer(DefaultBodyLimit::max(32_768)),
+        )
+        .route(
+            "/api/wallet/restore",
+            post(wallet_restore).layer(DefaultBodyLimit::max(32_768)),
+        )
+        .route(
+            "/api/wallet/unlock",
+            post(wallet_unlock).layer(DefaultBodyLimit::max(32_768)),
+        )
+        .route("/api/wallet/lock", post(wallet_lock))
+        .route("/api/wallet/backup", post(wallet_backup))
+        .route(
+            "/api/wallet/send",
+            post(wallet_send).layer(DefaultBodyLimit::max(32_768)),
+        )
+        .route("/api/wallet/rebroadcast", post(wallet_rebroadcast))
+        .route(
+            "/api/wallet/rpc",
+            post(wallet_rpc).layer(DefaultBodyLimit::max(32_768)),
+        )
         .route("/api/upload", post(upload))
         .route("/api/rate", post(rate))
         .route("/api/rating-session/confirm", post(rating_session_confirm))
@@ -191,6 +218,123 @@ async fn wallet(State(state): State<HttpState>, Json(input): Json<Wallet>) -> Ap
 async fn wallet_browser(State(state): State<HttpState>) -> ApiResult {
     crate::update::open_browser(&format!("http://{}/", state.host))?;
     Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalletPassword {
+    password: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalletImport {
+    private_key: String,
+    password: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalletRestore {
+    backup: Value,
+    password: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalletApproval {
+    approval_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalletRpc {
+    method: String,
+    params: Value,
+}
+async fn wallet_create(
+    State(state): State<HttpState>,
+    Json(input): Json<WalletPassword>,
+) -> ApiResult {
+    let result = state
+        .app
+        .crypto
+        .create_local_wallet(zeroize::Zeroizing::new(input.password), None, None)
+        .await?;
+    state.app.announce().await;
+    Ok(Json(result))
+}
+async fn wallet_import(
+    State(state): State<HttpState>,
+    Json(input): Json<WalletImport>,
+) -> ApiResult {
+    let result = state
+        .app
+        .crypto
+        .create_local_wallet(
+            zeroize::Zeroizing::new(input.password),
+            Some(zeroize::Zeroizing::new(input.private_key)),
+            None,
+        )
+        .await?;
+    state.app.announce().await;
+    Ok(Json(result))
+}
+async fn wallet_restore(
+    State(state): State<HttpState>,
+    Json(input): Json<WalletRestore>,
+) -> ApiResult {
+    let result = state
+        .app
+        .crypto
+        .create_local_wallet(
+            zeroize::Zeroizing::new(input.password),
+            None,
+            Some(input.backup),
+        )
+        .await?;
+    state.app.announce().await;
+    Ok(Json(result))
+}
+async fn wallet_unlock(
+    State(state): State<HttpState>,
+    Json(input): Json<WalletPassword>,
+) -> ApiResult {
+    let result = state
+        .app
+        .crypto
+        .unlock_local_wallet(zeroize::Zeroizing::new(input.password))
+        .await?;
+    state.app.announce().await;
+    Ok(Json(result))
+}
+async fn wallet_lock(State(state): State<HttpState>) -> ApiResult {
+    state.app.crypto.lock_local_wallet().await?;
+    Ok(Json(json!({"ok":true})))
+}
+async fn wallet_backup(State(state): State<HttpState>) -> ApiResult {
+    Ok(Json(state.app.crypto.wallet_backup().await?))
+}
+async fn wallet_send(
+    State(state): State<HttpState>,
+    Json(input): Json<WalletApproval>,
+) -> ApiResult {
+    Ok(Json(
+        state
+            .app
+            .crypto
+            .send_local_transaction(&input.approval_id)
+            .await?,
+    ))
+}
+async fn wallet_rebroadcast(State(state): State<HttpState>) -> ApiResult {
+    Ok(Json(
+        state.app.crypto.rebroadcast_local_transaction().await?,
+    ))
+}
+async fn wallet_rpc(State(state): State<HttpState>, Json(input): Json<WalletRpc>) -> ApiResult {
+    Ok(Json(
+        state
+            .app
+            .crypto
+            .wallet_rpc(&input.method, input.params)
+            .await?,
+    ))
 }
 async fn update_check(State(state): State<HttpState>) -> Json<crate::update::Status> {
     Json(state.app.updates.check().await)

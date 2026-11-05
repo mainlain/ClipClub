@@ -36,8 +36,112 @@ function fmtTokens(units,minimum=2){
   const fraction=(value%TOKEN_SCALE).toString().padStart(6,'0').replace(/0+$/,'').padEnd(minimum,'0');
   return `${negative?'−':''}${whole}${fraction?`.${fraction}`:''}`;
 }
-function walletProvider(){return window.ethereum?.request?window.ethereum:null;}
-function walletAvailable(){return !!state?.crypto?.configured&&!state.crypto.error&&!!state.crypto.wallet&&!!walletProvider()&&walletAccount?.toLowerCase()===state.crypto.wallet.toLowerCase();}
+function browserWalletProvider(){return window.ethereum?.request?window.ethereum:null;}
+function localWallet(){return state?.crypto?.local_wallet||null;}
+function nativeWalletSelected(){return !!localWallet()?.exists&&!!localWallet().address&&localWallet().address.toLowerCase()===state?.crypto?.wallet?.toLowerCase();}
+const nativeWalletProvider={async request({method,params=[]}){
+  if(method==='eth_accounts')return nativeWalletSelected()?[state.crypto.wallet]:[];
+  if(method==='eth_chainId')return state.crypto.chain_hex;
+  if(method==='eth_getTransactionReceipt')return api('wallet/rpc',{method,params});
+  throw Error('This built-in wallet request is not supported.');
+}};
+function walletProvider(){return nativeWalletSelected()?nativeWalletProvider:browserWalletProvider();}
+function walletAvailable(){return !!state?.crypto?.configured&&!state.crypto.error&&!!state.crypto.wallet&&(nativeWalletSelected()?!!localWallet().unlocked:!!walletProvider()&&walletAccount?.toLowerCase()===state.crypto.wallet.toLowerCase());}
+function fmtEth(raw){
+  let value;try{value=BigInt(raw??'0');}catch{return '—';}
+  const scale=1000000000000000000n,whole=value/scale,fraction=(value%scale).toString().padStart(18,'0').replace(/0+$/,'');
+  return `${whole}${fraction?`.${fraction}`:''} ETH`;
+}
+let walletFormBusy=false,nativeApproval=null;
+function clearWalletSecrets(){for(const id of ['wallet-private-key','wallet-password','wallet-password-confirm','wallet-backup-json','wallet-backup-file'])$(id).value='';}
+function renderNativeWallet(){
+  const local=localWallet(),exists=!!local?.exists,unlocked=!!local?.unlocked;
+  $('native-wallet-status').textContent=exists?`Built-in wallet · ${unlocked?'unlocked':'locked'}. Locks after ${Math.round((local.auto_lock_seconds||900)/60)} minutes without wallet activity.`:'Create a wallet or import your Ethereum private key to pay and receive rewards inside the app.';
+  $('native-gas-balance').textContent=nativeWalletSelected()?`Gas balance · ${fmtEth(state.crypto.native_balance_wei)} on ${state.crypto.chain_name}`:'';
+  $('manage-wallet').textContent=exists?(unlocked?'Manage built-in wallet':'Unlock built-in wallet'):'Set up wallet';
+  $('manage-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
+  $('copy-wallet-address').hidden=!exists;$('lock-wallet').hidden=!unlocked;$('backup-wallet').hidden=!exists;
+  $('lock-wallet').disabled=walletFormBusy||transactionBusy||rollBusy||busy;$('backup-wallet').disabled=walletFormBusy;
+  if(nativeApproval&&(!nativeWalletSelected()||!unlocked))finishNativeApproval(false);
+  if($('wallet-dialog').open)renderWalletDialog();
+}
+function renderWalletDialog(){
+  const local=localWallet(),exists=!!local?.exists,unlocked=!!local?.unlocked,mode=$('wallet-mode').value||'create';
+  $('wallet-dialog-title').textContent=exists?'Your built-in wallet':'Set up your wallet';
+  $('wallet-dialog-account').hidden=!exists;$('wallet-receive-address').textContent=local?.address||'';
+  $('wallet-setup-options').hidden=exists;
+  $('wallet-private-key-row').hidden=exists||mode!=='import';$('wallet-restore-row').hidden=exists||mode!=='restore';
+  $('wallet-password-row').hidden=unlocked;
+  $('wallet-password').required=!unlocked;$('wallet-password').minLength=exists||mode==='restore'?1:12;
+  $('wallet-password').autocomplete=exists||mode==='restore'?'current-password':'new-password';
+  $('wallet-password-label').textContent=exists?'Wallet password':mode==='restore'?'Backup password':'New wallet password · at least 12 characters';
+  $('wallet-password-confirm-row').hidden=exists||mode==='restore';$('wallet-password-confirm').required=!exists&&mode!=='restore';
+  $('wallet-submit').hidden=unlocked;$('wallet-submit').textContent=walletFormBusy?'Working…':exists?'Unlock wallet':mode==='import'?'Import wallet':mode==='restore'?'Restore wallet':'Create wallet';
+  $('wallet-submit').disabled=walletFormBusy;$('wallet-mode').disabled=walletFormBusy;
+  $('wallet-dialog-backup').hidden=!exists;$('wallet-dialog-lock').hidden=!unlocked;
+  $('wallet-select-native').hidden=!exists||nativeWalletSelected();$('wallet-select-native').disabled=walletFormBusy||transactionBusy||walletSelectionLocked();
+  $('wallet-dialog-backup').disabled=walletFormBusy;$('wallet-dialog-lock').disabled=walletFormBusy||transactionBusy;
+}
+function openNativeWallet(){
+  if(walletFormBusy)return;
+  clearWalletSecrets();$('wallet-form-error').hidden=true;renderWalletDialog();
+  if(!$('wallet-dialog').open)$('wallet-dialog').showModal();
+}
+async function submitNativeWallet(event){
+  event.preventDefault();if(walletFormBusy)return;
+  const local=localWallet(),exists=!!local?.exists,mode=exists?'unlock':$('wallet-mode').value||'create',password=$('wallet-password').value;
+  $('wallet-form-error').hidden=true;
+  if(!password){$('wallet-form-error').textContent='Enter your wallet password.';$('wallet-form-error').hidden=false;return;}
+  if(['create','import'].includes(mode)&&(password.length<12||password!==$('wallet-password-confirm').value)){$('wallet-form-error').textContent=password.length<12?'Use a password with at least 12 characters.':'The password confirmation does not match.';$('wallet-form-error').hidden=false;return;}
+  let body={password};
+  try{
+    if(mode==='import'){body.private_key=$('wallet-private-key').value.trim();if(!/^(?:0x)?[a-fA-F0-9]{64}$/.test(body.private_key))throw Error('Enter a complete 32-byte Ethereum private key.');}
+    if(mode==='restore'){const file=$('wallet-backup-file').files?.[0];if(file&&file.size>20000)throw Error('Choose a ClipClub wallet backup smaller than 20 KB.');body.backup=JSON.parse(file?await file.text():$('wallet-backup-json').value);}
+    walletFormBusy=true;renderWalletDialog();clearWalletSecrets();
+    await api(`wallet/${mode}`,body);body=null;await refresh();
+    toast(mode==='unlock'?'Built-in wallet unlocked.':'Wallet saved on this device. Download an encrypted backup and keep its password safe.');
+  }catch(error){$('wallet-form-error').textContent=error instanceof SyntaxError?'The encrypted backup is not valid JSON.':error.message;$('wallet-form-error').hidden=false;}
+  finally{body=null;walletFormBusy=false;clearWalletSecrets();renderWalletDialog();renderWallet();}
+}
+async function lockNativeWallet(){
+  if(walletFormBusy||transactionBusy||rollBusy||busy)return;
+  finishNativeApproval(false);clearWalletSecrets();walletFormBusy=true;
+  try{await api('wallet/lock',{});await refresh();toast('Built-in wallet locked.');}catch(error){toast(error.message);}finally{walletFormBusy=false;renderWallet();}
+}
+async function backupNativeWallet(){
+  if(walletFormBusy||!localWallet()?.exists)return;
+  walletFormBusy=true;renderWalletDialog();
+  try{
+    const backup=await api('wallet/backup',{}),blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download=`clipclub-wallet-${localWallet().address}.json`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast('Encrypted backup downloaded. Keep its password separately; there is no password reset.');
+  }catch(error){toast(error.message);}finally{walletFormBusy=false;renderWallet();}
+}
+function finishNativeApproval(approved){
+  const approval=nativeApproval;if(!approval)return;nativeApproval=null;
+  if($('wallet-approval-dialog').open)$('wallet-approval-dialog').close();approval.resolve(approved);
+}
+async function reviewNativeTransaction(transaction,action,fields){
+  const approval=transaction.wallet_approval;
+  if(!approval||typeof approval.id!=='string'||!approval.id||approval.action!==action||!/^\d+$/.test(String(approval.max_fee_wei)))throw Error('The built-in wallet did not return a valid transaction review.');
+  if(nativeApproval)throw Error('Another transaction review is open.');
+  $('wallet-review-action').textContent=({rate_session:'Settle rating session',request_roll:'Commit roll wager',settle_roll:'Settle committed roll',register_seeder:'Register seeder wallet',register_clip:'Register clip',rate_clip:'Pay clip rating'})[action]||action;
+  $('wallet-review-network').textContent=`${state.crypto.chain_name} · ${state.crypto.chain_id}`;
+  $('wallet-review-from').textContent=transaction.from;$('wallet-review-contract').textContent=transaction.to;
+  const units=approval.token_units??(action==='rate_session'?queuedTokenUnits().toString():action==='request_roll'?fields.wager_units:action==='rate_clip'?(BigInt(fields.score)*TOKEN_SCALE).toString():'0');
+  $('wallet-review-amount').textContent=action==='settle_roll'?'No new wager · settles the existing commitment':`${fmtTokens(units)} ✨${action==='request_roll'?' wager held on-chain':''}`;
+  $('wallet-review-fee').textContent=fmtEth(approval.max_fee_wei);
+  const expires=Date.now()+Math.max(0,Math.min(120,Number(approval.expires_in_seconds)||0))*1000;
+  $('wallet-review-expiry').textContent='This review expires in two minutes. The actual gas charge can be lower.';$('wallet-approval-error').hidden=true;
+  const accepted=await new Promise(resolve=>{nativeApproval={resolve,expires};$('wallet-approval-dialog').showModal();});
+  if(!accepted){const error=Error('Transaction cancelled. No tokens were sent.');error.code=4001;throw error;}
+  return approval.id;
+}
+function approveNativeTransaction(event){
+  event.preventDefault();if(!nativeApproval)return;
+  if(Date.now()>=nativeApproval.expires){$('wallet-approval-error').textContent='This transaction review expired. Cancel and prepare it again.';$('wallet-approval-error').hidden=false;return;}
+  finishNativeApproval(true);
+}
 function currentTokenBalance(){try{return BigInt(state?.crypto?.balance_units||'0');}catch{return 0n;}}
 function ratingSession(){return state?.crypto?.rating_session||null;}
 function queuedRatingCount(){return ratingSession()?.ratings?.length||0;}
@@ -155,10 +259,11 @@ async function forgetTransaction(){
   rememberTransaction(null);
 }
 async function openWalletBrowser(){try{await api('wallet/browser',{});toast('Opened the app in your default browser. Connect a MegaETH wallet there.');}catch(error){toast(error.message);}}
-async function requireWallet(){
+async function requireWallet({readOnly=false}={}){
   const crypto=state?.crypto,provider=walletProvider();
   if(!crypto?.configured)throw Error('The 좋아 contract has not been configured. See Settings for deployment status.');
   if(crypto.error)throw Error(crypto.error);
+  if(nativeWalletSelected()){if(!localWallet().unlocked&&!readOnly){openNativeWallet();throw Error('Unlock your built-in wallet, then try this transaction again.');}return nativeWalletProvider;}
   if(!provider)throw Error('Open the app in a browser with an Ethereum wallet, then connect it.');
   const accounts=await provider.request({method:'eth_accounts'});
   if(!accounts?.[0]||accounts[0].toLowerCase()!==crypto.wallet?.toLowerCase())throw Error('Connect the wallet you want to use before signing.');
@@ -176,10 +281,15 @@ async function requireWallet(){
 }
 async function connectWallet(){
   if(walletBusy||transactionBusy||rollBusy||busy)return;
-  if(!walletProvider()){await openWalletBrowser();return;}
+  if(localWallet()){openNativeWallet();return;}
+  return connectBrowserWallet();
+}
+async function connectBrowserWallet(){
+  if(walletBusy||transactionBusy||rollBusy||busy)return;
+  if(!browserWalletProvider()){await openWalletBrowser();return;}
   walletBusy=true;renderWallet();
   try{
-    const accounts=await walletProvider().request({method:'eth_requestAccounts'});
+    const accounts=await browserWalletProvider().request({method:'eth_requestAccounts'});
     if(!/^0x[a-fA-F0-9]{40}$/.test(accounts?.[0]||''))throw Error('No Ethereum wallet account was selected.');
     if(walletSelectionLocked()&&accounts[0].toLowerCase()!==state.crypto?.wallet?.toLowerCase())throw Error('Settle or discard queued ratings before switching wallets.');
     await api('wallet',{address:accounts[0]});walletAccount=accounts[0];
@@ -196,7 +306,8 @@ function renderWallet(){
   $('balance').title=crypto?.wallet?`Wallet balance ${fmtTokens(crypto.balance_units)} ✨; available after queued ratings`:'';
   $('connect-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
   $('open-wallet-browser').disabled=transactionBusy||rollBusy||busy;
-  $('connect-wallet').textContent=walletBusy?'Connecting…':walletAvailable()?`${walletAccount.slice(0,6)}…${walletAccount.slice(-4)}`:walletProvider()?'Connect wallet':'Open wallet browser ↗';
+  $('connect-wallet').textContent=walletBusy?'Connecting…':localWallet()?nativeWalletSelected()?(localWallet().unlocked?'Wallet':'Unlock wallet'):'Wallet':walletAvailable()?`${walletAccount.slice(0,6)}…${walletAccount.slice(-4)}`:walletProvider()?'Connect wallet':'Open wallet browser ↗';
+  $('connect-browser-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
   $('crypto-network').textContent=crypto?`${crypto.chain_name} · ${crypto.chain_id}`:'MegaETH';
   $('crypto-wallet').textContent=crypto?.wallet||'Disconnected';
   $('crypto-contract').textContent=crypto?.contract||'Not configured';
@@ -204,7 +315,8 @@ function renderWallet(){
   $('register-seeder').disabled=!walletAvailable()||walletBusy||transactionBusy||rollBusy||busy||!!pendingTransaction;
   $('register-seeder').hidden=!!crypto?.seeder_registered;
   $('rating-credit-status').textContent=`Unused rating credit · ${fmtTokens(crypto?.rating_credit_units||'0')} ✨. You pay only the rating score. Credit funds future seeder rewards; any remaining shortfall is minted automatically.`;
-  $('wallet-status').textContent=walletPhase||crypto?.error||(!crypto?.configured?'The 좋아 token has not been deployed and configured for this app.':!crypto.wallet?'Connect your wallet to see your ✨ balance and sign transactions.':!walletAvailable()?'This is the last selected wallet. Connect it in this browser to sign.':'Your wallet signs each transaction. Roll settlement uses verified drand randomness.');
+  $('wallet-status').textContent=walletPhase||crypto?.error||(!crypto?.configured?'The 좋아 token has not been deployed and configured for this app.':nativeWalletSelected()?(localWallet().unlocked?'Your built-in wallet is ready. Review each transaction before approving it.':'Your built-in wallet is locked. Unlock it to sign transactions.'):!crypto.wallet?'Set up your built-in wallet to receive tokens and approve transactions.':!walletAvailable()?'This is the last selected browser wallet. Connect it in your browser to sign.':'Your browser wallet signs each transaction. Roll settlement uses verified drand randomness.');
+  renderNativeWallet();
   $('stat-earned').textContent=crypto?.configured?`${fmtTokens(crypto.total_supply_units)} ✨`:'—';
   $('pending-transaction').hidden=!pendingTransaction;
   $('pending-transaction-detail').textContent=pendingTransaction?`Unconfirmed ${pendingTransaction.action.replaceAll('_',' ')} · ${pendingTransaction.hash}. Retry confirmation before sending another transaction.`:'';
@@ -249,7 +361,12 @@ async function sendCryptoTransaction(action,fields={}){
     if(state.crypto.wallet?.toLowerCase()!==crypto.wallet.toLowerCase()||state.crypto.contract?.toLowerCase()!==crypto.contract.toLowerCase()||state.crypto.chain_id!==crypto.chain_id)throw Error('The selected wallet or network changed. Review the selection and try again.');
     walletPhase='Approve the transaction in your wallet…';renderWallet();
     signatureRequested=true;
-    const hash=await provider.request({method:'eth_sendTransaction',params:[transaction]});
+    let hash;
+    if(provider===nativeWalletProvider){
+      const approval_id=await reviewNativeTransaction(transaction,action,fields);
+      const result=await api('wallet/send',{approval_id});hash=result.hash;
+      if(result.broadcast_error)toast(`Transaction ${hash} is saved. Retry confirmation in Settings to resend the same signed transaction.`);
+    }else hash=await provider.request({method:'eth_sendTransaction',params:[transaction]});
     if(!/^0x[a-fA-F0-9]{64}$/.test(hash||''))throw Error('The wallet did not return a valid transaction hash.');
     submittedHash=hash;
     const record={action,...fields,...(sessionId?{session_id:sessionId}:{}),hash,chain_id:crypto.chain_id,contract:crypto.contract,wallet:crypto.wallet};rememberTransaction(record);
@@ -273,7 +390,7 @@ async function sendCryptoTransaction(action,fields={}){
 async function retryTransaction(){
   if(!pendingTransaction||walletBusy||transactionBusy||rollBusy||busy)return;
   walletBusy=true;transactionBusy=true;renderWallet();
-  try{await confirmTransaction(pendingTransaction,await requireWallet());toast('Transaction confirmed.');}
+  try{const provider=await requireWallet({readOnly:true});if(provider===nativeWalletProvider)await api('wallet/rebroadcast',{});await confirmTransaction(pendingTransaction,provider);toast('Transaction confirmed.');}
   catch(error){if(error.code==='TRANSACTION_REVERTED')try{await resetRevertedTransaction(pendingTransaction);}catch{}toast(error.message);}
   finally{walletPhase='';walletBusy=false;transactionBusy=false;await applyDeferredWallet();render();}
 }
@@ -535,13 +652,27 @@ $('roll-form').addEventListener('submit',event=>{event.preventDefault();roll();}
 $('settle-roll').addEventListener('click',settleRoll);
 $('recover-roll').addEventListener('click',recoverRoll);
 $('connect-wallet').addEventListener('click',connectWallet);
+$('connect-browser-wallet').addEventListener('click',connectBrowserWallet);
+$('manage-wallet').addEventListener('click',openNativeWallet);
+$('close-wallet').addEventListener('click',()=>$('wallet-dialog').close());
+$('wallet-dialog').addEventListener('close',clearWalletSecrets);
+$('wallet-mode').addEventListener('change',()=>{clearWalletSecrets();$('wallet-form-error').hidden=true;renderWalletDialog();});
+$('wallet-form').addEventListener('submit',submitNativeWallet);
+$('wallet-select-native').addEventListener('click',async()=>{if(walletFormBusy||transactionBusy||walletSelectionLocked())return;try{await api('wallet',{address:localWallet().address});await refresh();toast('Built-in wallet selected.');}catch(error){toast(error.message);}});
+for(const id of ['copy-wallet-address','wallet-dialog-copy'])$(id).addEventListener('click',()=>copy(localWallet()?.address));
+for(const id of ['lock-wallet','wallet-dialog-lock'])$(id).addEventListener('click',lockNativeWallet);
+for(const id of ['backup-wallet','wallet-dialog-backup'])$(id).addEventListener('click',backupNativeWallet);
+$('wallet-approval-form').addEventListener('submit',approveNativeTransaction);
+$('wallet-approval-cancel').addEventListener('click',()=>finishNativeApproval(false));
+$('wallet-approval-dialog').addEventListener('cancel',event=>{event.preventDefault();finishNativeApproval(false);});
+$('wallet-approval-dialog').addEventListener('close',()=>finishNativeApproval(false));
 $('open-wallet-browser').addEventListener('click',openWalletBrowser);
 $('proof-browser').addEventListener('click',openWalletBrowser);
 $('retry-transaction').addEventListener('click',retryTransaction);
 $('roll-wager').addEventListener('input',()=>{$('roll-error').hidden=true;renderRoll();});
 $('roll-odds').innerHTML=Array.from({length:10},(_,k)=>`<div><strong>${k}×</strong><span>${(2**(9-k)/1023*100).toFixed(k>5?3:2)}%</span></div>`).join('');
 $('roll-player').addEventListener('error',()=>{if(state?.roll?.clip){$('roll-error').textContent='Your system could not play this clip’s codec. Your roll and payout are saved.';$('roll-error').hidden=false;}});
-document.addEventListener('keydown',event=>{if(event.repeat||event.ctrlKey||event.metaKey||event.altKey||event.target.isContentEditable||/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)||$('preview-dialog').open)return;if(event.key==='Escape'&&page!=='home'){event.preventDefault();navigate('home');}else if(/^[0-9]$/.test(event.key)&&page==='rate'){event.preventDefault();rate(Number(event.key));}});
+document.addEventListener('keydown',event=>{if(event.repeat||event.ctrlKey||event.metaKey||event.altKey||event.target.isContentEditable||/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)||$('preview-dialog').open||$('wallet-dialog').open||$('wallet-approval-dialog').open)return;if(event.key==='Escape'&&page!=='home'){event.preventDefault();navigate('home');}else if(/^[0-9]$/.test(event.key)&&page==='rate'){event.preventDefault();rate(Number(event.key));}});
 $('session-button').addEventListener('click',toggleRatingSession);
 $('settle-rating-session').addEventListener('click',settleRatingSession);
 $('discard-rating-session').addEventListener('click',discardRatingSession);
@@ -581,16 +712,18 @@ $('update-release').addEventListener('click',()=>openUpdate('release'));
 $('listen-addresses').addEventListener('click',event=>{const button=event.target.closest('[data-address]');if(button)copy(button.dataset.address);});
 window.addEventListener('pagehide',()=>{$('roll-player').pause();if(state?.session)fetch('/api/session',{method:'POST',headers:{'x-clipcrop-token':token,'Content-Type':'application/json'},body:'{"active":false}',keepalive:true}).catch(()=>{});});
 async function syncWalletAccount(){
-  try{const accounts=await walletProvider()?.request({method:'eth_accounts'});walletAccount=accounts?.[0]||null;render();}catch{walletAccount=null;}
+  if(nativeWalletSelected()){walletAccount=state.crypto.wallet;render();return;}
+  try{const accounts=await browserWalletProvider()?.request({method:'eth_accounts'});walletAccount=accounts?.[0]||null;render();}catch{walletAccount=null;}
 }
-if(walletProvider()?.on){
-  walletProvider().on('accountsChanged',async accounts=>{
+if(browserWalletProvider()?.on){
+  browserWalletProvider().on('accountsChanged',async accounts=>{
+    if(nativeWalletSelected())return;
     walletAccount=accounts?.[0]||null;
     if(transactionBusy){deferredWalletAddress=walletAccount;renderWallet();return;}
     if(walletSelectionLocked()&&walletAccount?.toLowerCase()!==state.crypto?.wallet?.toLowerCase()){render();toast('Settle or discard queued ratings and confirm pending transactions before switching wallets.');return;}
     pendingTransaction=null;
     try{await api('wallet',{address:walletAccount});await refresh();}catch(error){toast(error.message);}
   });
-  walletProvider().on('chainChanged',()=>{walletPhase='';refresh();});
+  browserWalletProvider().on('chainChanged',()=>{if(nativeWalletSelected())return;walletPhase='';refresh();});
 }
 (async()=>{await refresh();initialized=true;await syncWalletAccount();setInterval(refresh,1500);})();
