@@ -42,6 +42,10 @@ jobs:
           python3 scripts/release.py version --tag "$RELEASE_TAG"
           if [[ "$PUBLISH" == true ]]; then
             test "$(git rev-parse HEAD)" = "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+            git merge-base --is-ancestor HEAD refs/remotes/origin/main || {
+              printf 'Release tags must point to commits already merged into main.\n' >&2
+              exit 1
+            }
           fi
           printf 'tag=%s\npublish=%s\n' "$RELEASE_TAG" "$PUBLISH" >> "$GITHUB_OUTPUT"
       - name: Validate release tooling
