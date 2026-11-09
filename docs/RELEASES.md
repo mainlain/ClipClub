@@ -4,6 +4,10 @@ The source repository and release downloads are public so installed apps can che
 
 Checks run at startup and every six hours, with a manual check in Settings. Choosing **Install and restart** updates a writable macOS app bundle or portable Linux installation. A staged helper replaces the application after it exits and restores the previous app if replacement fails; the existing profile is retained. A direct macOS executable and system-managed Linux installation such as `.deb` use the browser download/manual installation path. No release is required during setup, and publishing a new stable version advertises it to the next successful check.
 
+## Pre-1.0 policy
+
+Keep all app releases in the `0.x.y` series until the user explicitly authorizes moving to `1.0.0`. Before that milestone, preserving balances, wallets, profiles, or other application state across updates is not a migration or backward-compatibility requirement. Revisit those requirements when version 1 is authorized.
+
 ## Publish a version
 
 1. Merge completed work into `main`. Change `[package].version` in `Cargo.toml` and update the matching root package version in `Cargo.lock` with Cargo. Commit and push the completed change to `main`.
