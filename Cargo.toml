@@ -1,6 +1,6 @@
 [package]
 name = "clipclub"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A small peer-to-peer video commons"
 license = "MIT"
