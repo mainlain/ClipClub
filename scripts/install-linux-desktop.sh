@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The packaged copy lives alongside the executable and fireworks PNG icon.
+# Prefer the packaged launcher, which also selects per-user data in a Debian
+# installation. The portable launcher keeps its adjacent profile by default.
 installer_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-program_path="${1:-$installer_directory/clipclub}"
+default_program="$installer_directory/launch-clipclub"
+if [[ ! -x "$default_program" ]]; then
+  default_program="$installer_directory/clipclub"
+fi
+program_path="${1:-$default_program}"
 if [[ "$(uname -s)" != Linux ]]; then
   printf 'This launcher installer is for Linux.\n' >&2
   exit 1

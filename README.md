@@ -16,11 +16,13 @@ On Apple Silicon macOS, open `dist/clipclub.app`, or run the executable:
 ./dist/clipclub
 ```
 
-On macOS, your profile is stored in `~/Library/Application Support/ClipCrop Points`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-points-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
+The app is portable by default: your profile is stored in `clipclub-data` beside the executable, or beside `clipclub.app` on macOS. Keep the app and that data folder together inside one writable folder; quit before moving or copying the whole folder to another location or computer. The macOS profile stays outside the signed app bundle so creating a wallet does not change the app's signature. The profile location follows the application, regardless of the terminal's working directory.
 
-The profile contains your private peer identity, legacy rating history, watched history, uploaded files, cached videos, an encrypted wallet keystore when you create or import a wallet, and a public-wallet/roll journal. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
+Use `--data-dir PATH` to choose a different profile folder. For system installations or a read-only application location, `--user-data` selects `~/Library/Application Support/ClipCrop Points` on macOS or `$XDG_DATA_HOME/clipcrop-points` on Linux, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Debian package launchers select this mode automatically. An explicit `--data-dir` takes precedence. Portable mode reports an error if its folder is not writable, so it cannot silently open a different wallet in your home directory.
 
-The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. It does not install a background service.
+The profile contains your private peer identity, legacy rating history, watched history, uploaded files, cached videos, an encrypted wallet keystore when you create or import a wallet, and a public-wallet/roll journal. The bundled video validator is extracted into that same folder. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
+
+The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. The desktop WebView uses a temporary browser session, with durable app data kept in the profile. It does not install a background service. Run the binary matching the destination computer's OS and CPU; native WebView libraries and playback codecs still come from the operating system, and token actions require the MegaETH network.
 
 ## Linux
 
@@ -32,7 +34,7 @@ See [Linux run and build instructions](docs/LINUX.md) for runtime packages, port
 
 clipclub checks the [latest published GitHub release](https://github.com/mainlain/ClipClub/releases/latest) at startup and every six hours. Settings shows the installed version, available update, release notes, and a manual check. Drafts and prereleases are excluded. GitHub access is anonymous; the app does not contain a GitHub credential.
 
-On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. Your identity, settings, built-in wallet, and clips stay in the existing profile folder. A direct macOS executable and system-managed installations such as a Debian package offer the matching download for manual installation. An update is installed only when you choose it.
+On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. The adjacent macOS profile is kept in place, and the Linux portable `clipclub-data` folder is retained when replacing its package. A direct macOS executable and system-managed installations such as a Debian package offer the matching download for manual installation. An update is installed only when you choose it.
 
 Release builds support Apple Silicon macOS and Linux x86-64. See [release publishing and update packaging](docs/RELEASES.md) for the tag-driven build workflow.
 
@@ -144,7 +146,7 @@ Open the app and it searches for peers automatically on the local network and ac
 
 The commands run in separate terminals. No address entry or settings change is needed. Allow local multicast for mDNS discovery and outbound UDP for internet DHT discovery. Internet peers also need reachable TCP ports as described above.
 
-The default peer mesh port is TCP **42931**; the default torrent listening port is TCP **42932**. The HTTP interface binds an ephemeral loopback port by default. CLI options are `--data-dir PATH`, `--p2p-port PORT`, `--torrent-port PORT`, `--http-port PORT`, and `--headless`. A data directory is locked to prevent concurrent processes from modifying the same profile.
+The default peer mesh port is TCP **42931**; the default torrent listening port is TCP **42932**. The HTTP interface binds an ephemeral loopback port by default. CLI options are `--data-dir PATH`, `--user-data`, `--p2p-port PORT`, `--torrent-port PORT`, `--http-port PORT`, and `--headless`. A data directory is locked to prevent concurrent processes from modifying the same profile.
 
 ## Build
 

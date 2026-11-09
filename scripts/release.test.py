@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -118,8 +119,44 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(archive.extractfile(member).read(), binary.read_bytes())
                 self.assertEqual(archive.extractfile(folder + '/third-party/ffprobe-LICENSE.txt').read(), license_file.read_bytes())
                 self.assertIn(folder + '/third-party/rust/example-1.0.0/LICENSE', archive.getnames())
+                portable_launcher = archive.extractfile(folder + '/launch-clipclub').read().decode()
+                self.assertNotIn('--user-data', portable_launcher)
+                self.assertIn('"$application_directory/clipclub" "$@"', portable_launcher)
+                info = json.load(archive.extractfile(folder + '/BUILD-INFO.json'))
+                self.assertIn('clipclub-data beside the executable', info['profile'])
+                self.assertFalse(any('/clipclub-data/' in name for name in archive.getnames()))
             debian = output / f'clipclub_{version}_amd64.deb'
-            self.assertTrue(debian.read_bytes().startswith(b'!<arch>\n'))
+            # Inspect the real Debian payload without requiring dpkg on macOS.
+            deb_contents = debian.read_bytes()
+            self.assertTrue(deb_contents.startswith(b'!<arch>\n'))
+            offset = 8
+            while offset < len(deb_contents):
+                header = deb_contents[offset:offset + 60]
+                size = int(header[48:58])
+                payload = deb_contents[offset + 60:offset + 60 + size]
+                if header[:16].decode().strip().rstrip('/') == 'data.tar.gz':
+                    break
+                offset += 60 + size + size % 2
+            else:
+                self.fail('Debian package is missing data.tar.gz')
+            with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as archive:
+                for name in ('./usr/bin/clipclub', './opt/clipclub/launch-clipclub'):
+                    launcher = archive.extractfile(name).read().decode()
+                    self.assertIn('exec /opt/clipclub/clipclub --user-data "$@"', launcher)
+                    self.assertEqual(archive.getmember(name).mode, 0o755)
+                desktop = archive.extractfile('./usr/share/applications/local.clipclub.desktop').read().decode()
+                self.assertIn('Exec=/usr/bin/clipclub\n', desktop)
+
+            # Repackaging must never remove a profile created in the build output.
+            wallet = output / 'linux-x86_64/clipclub-data/wallet.json'
+            wallet.parent.mkdir()
+            wallet.write_bytes(b'encrypted wallet fixture')
+            result = subprocess.run(['bash', str(ROOT / 'scripts/package-linux.sh')],
+                                    cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('contains a profile', result.stderr)
+            self.assertEqual(wallet.read_bytes(), b'encrypted wallet fixture')
 
     def test_mac_archive_has_one_app_root_and_preserves_executable_mode(self):
         with tempfile.TemporaryDirectory() as directory:

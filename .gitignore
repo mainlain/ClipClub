@@ -2,6 +2,7 @@
 /.build/
 /dist/
 /clipcrop-data/
+clipclub-data/
 /vendor/ffprobe*
 /vendor/ffmpeg*
 *.log

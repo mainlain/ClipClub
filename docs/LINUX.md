@@ -17,7 +17,7 @@ sudo apt install ./clipclub_0.1.0_amd64.deb
 clipclub
 ```
 
-All launch methods store your profile in `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Removing the package does not remove that profile.
+The Debian package's command-line and desktop launchers use `--user-data`, storing your profile in `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Removing the package does not remove that profile. The installed app files under `/opt/clipclub` remain separate from per-user data.
 
 ## Run a portable package
 
@@ -29,7 +29,7 @@ cd clipclub-0.1.0-linux-x86_64
 ./clipclub
 ```
 
-Your identity, points history, videos, and extracted validator live in the user data folder described above. Opening the app does not search for or create an adjacent profile in Downloads, and moving the executable preserves the same profile. Never share your profile's `identity.key`.
+Your identity, encrypted wallet, transaction journal, history, videos, and extracted validator live in `clipclub-data` beside the executable. Quit the app, then move or copy the entire extracted folder to carry everything with it. This path is based on the executable's location, so launching from another working directory opens the same profile. The desktop WebView uses a temporary browser session. Never share your profile's `identity.key`.
 
 The packaged wrapper uses the same profile location:
 
@@ -37,7 +37,7 @@ The packaged wrapper uses the same profile location:
 ./launch-clipclub
 ```
 
-Use `--data-dir PATH` with either executable or launcher to explicitly choose a profile folder, including a portable folder beside the executable.
+Use `--data-dir PATH` with either executable or launcher to choose a profile folder, or `--user-data` to use the per-user location described above. `--data-dir` takes precedence. The default portable folder must be writable; the app reports an error instead of silently switching to another profile. In-app updates retain the portable `clipclub-data` folder when replacing the package.
 
 The executable is architecture-specific. Use the package matching your Linux machine; an x86-64 package does not run natively on ARM64.
 
@@ -61,7 +61,7 @@ A portable package can include `install-desktop.sh`. Run it from the package dir
 ./install-desktop.sh
 ```
 
-This creates a launcher for the current user only, under `$XDG_DATA_HOME/applications`, defaulting to `~/.local/share/applications`. It points to the extracted application, so keep that folder in place. The application resolves the same user data profile folder on every launch to avoid writing into the application folder. It needs Python 3 only while creating the launcher.
+This creates a launcher for the current user only, under `$XDG_DATA_HOME/applications`, defaulting to `~/.local/share/applications`. It points to the extracted application and uses its adjacent `clipclub-data` profile. If you move the portable folder, run the installer again to update the menu entry. It needs Python 3 only while creating the launcher.
 
 ## Build on Linux
 

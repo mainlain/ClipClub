@@ -11,6 +11,7 @@ use std::{
 
 const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
+const PORTABLE_PROFILE: &str = "clipclub-data";
 
 struct InstallTarget {
     destination: PathBuf,
@@ -24,6 +25,7 @@ pub struct PreparedInstall {
     executable: PathBuf,
     backup: PathBuf,
     arguments: Vec<std::ffi::OsString>,
+    preserve_portable_profile: bool,
     launched: bool,
 }
 
@@ -116,10 +118,8 @@ fn writable_parent(parent: &Path) -> Result<()> {
 pub fn prepare(archive: &Path, version: &str, profile: &Path) -> Result<PreparedInstall> {
     let target = install_target()?;
     let profile = profile.canonicalize()?;
-    ensure!(
-        !profile.starts_with(&target.destination),
-        "This profile is inside the application folder; move it outside before installing an update"
-    );
+    let preserve_portable_profile = cfg!(target_os = "linux");
+    validate_profile_location(&target.destination, &profile, preserve_portable_profile)?;
     let parent = target
         .destination
         .parent()
@@ -141,6 +141,7 @@ pub fn prepare(archive: &Path, version: &str, profile: &Path) -> Result<Prepared
         executable: target.executable,
         backup: parent.join(format!(".clipclub-backup-{suffix}")),
         arguments: std::env::args_os().skip(1).collect(),
+        preserve_portable_profile,
         launched: false,
     };
     let unpacked = prepared.work.join("payload");
@@ -186,6 +187,9 @@ pub fn prepare(archive: &Path, version: &str, profile: &Path) -> Result<Prepared
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     anyhow::bail!("Automatic installation is unavailable on this platform");
+    if preserve_portable_profile {
+        validate_payload_profile(&prepared.payload)?;
+    }
     let binary = prepared.payload.join(&prepared.executable);
     ensure!(
         binary.is_file(),
@@ -203,6 +207,37 @@ pub fn prepare(archive: &Path, version: &str, profile: &Path) -> Result<Prepared
     prepared.arguments.push("--data-dir".into());
     prepared.arguments.push(profile.into_os_string());
     Ok(prepared)
+}
+
+fn validate_profile_location(destination: &Path, profile: &Path, portable: bool) -> Result<()> {
+    let reserved = destination.join(PORTABLE_PROFILE);
+    if portable {
+        match fs::symlink_metadata(&reserved) {
+            Ok(metadata) => ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "The portable profile must be a real directory before installing an update"
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error).context("Cannot inspect the portable profile"),
+        }
+    }
+    ensure!(
+        !profile.starts_with(destination) || (portable && profile == reserved),
+        if portable {
+            "Only clipclub-data can be kept inside the application folder during an update; use --data-dir with an external folder for other profiles"
+        } else {
+            "This profile is inside the application bundle; move it outside before installing an update"
+        }
+    );
+    Ok(())
+}
+
+fn validate_payload_profile(payload: &Path) -> Result<()> {
+    match fs::symlink_metadata(payload.join(PORTABLE_PROFILE)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("Cannot inspect the release profile path"),
+        Ok(_) => anyhow::bail!("The release contains the reserved clipclub-data profile folder"),
+    }
 }
 
 fn validate_binary(path: &Path, operating_system: &str, architecture: &str) -> Result<()> {
@@ -252,6 +287,11 @@ impl PreparedInstall {
             .arg(&self.backup)
             .arg(&self.executable)
             .arg(&self.work)
+            .arg(if self.preserve_portable_profile {
+                "1"
+            } else {
+                "0"
+            })
             .args(&self.arguments)
             .current_dir("/")
             .stdin(Stdio::null())
@@ -278,7 +318,8 @@ payload=$3
 backup=$4
 executable=$5
 work=$6
-shift 6
+preserve_profile=$7
+shift 7
 attempt=0
 while kill -0 "$old_pid" 2>/dev/null; do
   attempt=$((attempt + 1))
@@ -289,23 +330,59 @@ while kill -0 "$old_pid" 2>/dev/null; do
   /bin/sleep 1
 done
 # Do not follow a changed target or overwrite an existing backup.
-if [ ! -d "$destination" ] || [ -L "$destination" ] || [ ! -d "$payload" ] || [ -L "$payload" ] || [ -e "$backup" ]; then
+if [ ! -d "$destination" ] || [ -L "$destination" ] || [ ! -d "$payload" ] || [ -L "$payload" ] || [ -e "$backup" ] || [ -L "$backup" ]; then
   echo 'The installation changed while preparing the update.'
   exit 1
 fi
+profile_name=clipclub-data
+profile_exists=0
+profile_moved=0
+if [ "$preserve_profile" = 1 ]; then
+  # Never merge a release-supplied directory with private user state, including
+  # dangling symlinks which -e alone would not detect.
+  if [ -e "$payload/$profile_name" ] || [ -L "$payload/$profile_name" ]; then
+    echo 'The release contains the reserved clipclub-data profile folder.'
+    exit 1
+  fi
+  if [ -e "$destination/$profile_name" ] || [ -L "$destination/$profile_name" ]; then
+    if [ ! -d "$destination/$profile_name" ] || [ -L "$destination/$profile_name" ]; then
+      echo 'The portable profile changed while preparing the update.'
+      exit 1
+    fi
+    profile_exists=1
+  fi
+fi
+restore_original() {
+  if [ "$profile_moved" = 1 ]; then
+    if [ ! -d "$destination/$profile_name" ] || [ -L "$destination/$profile_name" ] || [ -e "$backup/$profile_name" ] || [ -L "$backup/$profile_name" ]; then
+      echo 'The portable profile changed; both installations were retained for recovery.'
+      return 1
+    fi
+    /bin/mv "$destination/$profile_name" "$backup/$profile_name" || return 1
+  fi
+  /bin/mv "$destination" "$work/failed-app" || return 1
+  /bin/mv "$backup" "$destination" || return 1
+}
 /bin/mv "$destination" "$backup"
 if ! /bin/mv "$payload" "$destination"; then
   /bin/mv "$backup" "$destination"
   echo 'The original installation was restored.'
   exit 1
 fi
+if [ "$profile_exists" = 1 ]; then
+  if ! /bin/mv "$backup/$profile_name" "$destination/$profile_name"; then
+    restore_original
+    echo 'The portable profile could not be moved; the original installation was restored.'
+    exit 1
+  fi
+  profile_moved=1
+fi
 /usr/bin/nohup "$destination/$executable" "$@" </dev/null >>"$work/restart.log" 2>&1 &
 new_pid=$!
 /bin/sleep 3
 if ! kill -0 "$new_pid" 2>/dev/null; then
   # A startup failure restores the complete old package before restarting it.
-  /bin/mv "$destination" "$work/failed-app"
-  /bin/mv "$backup" "$destination"
+  restore_original
   /usr/bin/nohup "$destination/$executable" "$@" </dev/null >>"$work/restart.log" 2>&1 &
   echo 'The updated app failed to start; the previous version was restored.'
   exit 1
@@ -485,6 +562,47 @@ mod tests {
     }
 
     #[test]
+    fn only_reserved_portable_profile_can_be_inside_the_replaced_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("application");
+        let profile = destination.join(PORTABLE_PROFILE);
+        fs::create_dir_all(&profile).unwrap();
+        assert!(validate_profile_location(&destination, &profile, true).is_ok());
+        assert!(validate_profile_location(&destination, &profile, false).is_err());
+        assert!(validate_profile_location(&destination, &destination, true).is_err());
+        assert!(validate_profile_location(&destination, &profile.join("nested"), true).is_err());
+        assert!(
+            validate_profile_location(&destination, &destination.join("custom"), true).is_err()
+        );
+        assert!(
+            validate_profile_location(&destination, &temp.path().join("external"), true).is_ok()
+        );
+        assert!(validate_payload_profile(&destination).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_portable_profiles_and_release_collisions_are_rejected() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("application");
+        let external = temp.path().join("external");
+        fs::create_dir(&destination).unwrap();
+        fs::create_dir(&external).unwrap();
+        symlink(&external, destination.join(PORTABLE_PROFILE)).unwrap();
+        assert!(validate_profile_location(&destination, &external, true).is_err());
+        assert!(validate_payload_profile(&destination).is_err());
+        fs::remove_file(destination.join(PORTABLE_PROFILE)).unwrap();
+        symlink(
+            temp.path().join("missing"),
+            destination.join(PORTABLE_PROFILE),
+        )
+        .unwrap();
+        assert!(validate_profile_location(&destination, &external, true).is_err());
+        assert!(validate_payload_profile(&destination).is_err());
+    }
+
+    #[test]
     fn zip_rejects_symlinks_and_preserves_executable_mode() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("release.zip");
@@ -585,7 +703,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn helper_installs_or_rolls_back_and_passes_arguments_as_data() {
-        for fails in [false, true] {
+        for (fails, portable) in [(false, false), (true, false), (false, true), (true, true)] {
             let temp = tempfile::tempdir().unwrap();
             let destination = temp.path().join("app with spaces and ' quotes");
             let work = temp.path().join("work");
@@ -596,6 +714,19 @@ mod tests {
             fs::create_dir(&work).unwrap();
             fake_executable(&destination.join("clipclub"), false);
             fs::write(destination.join("original-marker"), b"old").unwrap();
+            if portable {
+                fs::create_dir(destination.join(PORTABLE_PROFILE)).unwrap();
+                fs::write(
+                    destination.join(PORTABLE_PROFILE).join("wallet.json"),
+                    b"encrypted wallet",
+                )
+                .unwrap();
+                fs::write(
+                    destination.join(PORTABLE_PROFILE).join("identity.key"),
+                    b"peer identity",
+                )
+                .unwrap();
+            }
             fake_executable(&payload.join("clipclub"), fails);
             fs::write(payload.join("updated-marker"), b"new").unwrap();
             let script = work.join("install.sh");
@@ -610,6 +741,7 @@ mod tests {
                     backup.as_os_str(),
                     std::ffi::OsStr::new("clipclub"),
                     work.as_os_str(),
+                    std::ffi::OsStr::new(if portable { "1" } else { "0" }),
                     pidfile.as_os_str(),
                     arguments.as_os_str(),
                     std::ffi::OsStr::new(literal),
@@ -635,7 +767,80 @@ mod tests {
             assert_eq!(destination.join("original-marker").exists(), fails);
             assert_eq!(destination.join("updated-marker").exists(), !fails);
             assert_eq!(backup.exists(), !fails);
+            if portable {
+                assert_eq!(
+                    fs::read(destination.join(PORTABLE_PROFILE).join("wallet.json")).unwrap(),
+                    b"encrypted wallet"
+                );
+                assert_eq!(
+                    fs::read(destination.join(PORTABLE_PROFILE).join("identity.key")).unwrap(),
+                    b"peer identity"
+                );
+                assert!(
+                    !backup.join(PORTABLE_PROFILE).exists(),
+                    "The backup must not retain a second wallet profile"
+                );
+                assert!(!work.join("failed-app").join(PORTABLE_PROFILE).exists());
+            }
             assert!(!temp.path().join("should-not-exist").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_rejects_profile_collisions_before_replacing_the_installation() {
+        use std::os::unix::fs::symlink;
+        for hostile in [
+            "release-directory",
+            "release-dangling-symlink",
+            "profile-symlink",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let destination = temp.path().join("app");
+            let work = temp.path().join("work");
+            let payload = work.join("payload");
+            let backup = temp.path().join("backup");
+            fs::create_dir(&work).unwrap();
+            fake_executable(&destination.join("clipclub"), false);
+            fake_executable(&payload.join("clipclub"), false);
+            let profile = destination.join(PORTABLE_PROFILE);
+            if hostile == "profile-symlink" {
+                let external = temp.path().join("external");
+                fs::create_dir(&external).unwrap();
+                fs::write(external.join("wallet.json"), b"encrypted wallet").unwrap();
+                symlink(&external, &profile).unwrap();
+            } else {
+                fs::create_dir(&profile).unwrap();
+                fs::write(profile.join("wallet.json"), b"encrypted wallet").unwrap();
+                if hostile == "release-directory" {
+                    fs::create_dir(payload.join(PORTABLE_PROFILE)).unwrap();
+                } else {
+                    symlink(temp.path().join("missing"), payload.join(PORTABLE_PROFILE)).unwrap();
+                }
+            }
+            let script = work.join("install.sh");
+            fs::write(&script, INSTALL_HELPER).unwrap();
+            let result = Command::new("/bin/sh")
+                .arg(&script)
+                .args([
+                    std::ffi::OsStr::new("2147483647"),
+                    destination.as_os_str(),
+                    payload.as_os_str(),
+                    backup.as_os_str(),
+                    std::ffi::OsStr::new("clipclub"),
+                    work.as_os_str(),
+                    std::ffi::OsStr::new("1"),
+                ])
+                .output()
+                .unwrap();
+            assert!(!result.status.success(), "{hostile}");
+            assert!(destination.join("clipclub").is_file());
+            assert!(payload.join("clipclub").is_file());
+            assert!(!backup.exists());
+            assert_eq!(
+                fs::read(profile.join("wallet.json")).unwrap(),
+                b"encrypted wallet"
+            );
         }
     }
 
@@ -652,6 +857,7 @@ mod tests {
                 executable: PathBuf::new(),
                 backup: PathBuf::new(),
                 arguments: vec![],
+                preserve_portable_profile: false,
                 launched: false,
             };
         }

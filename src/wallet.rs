@@ -370,10 +370,11 @@ impl WalletVault {
                 .context("Cannot create encrypted wallet file")?;
             file.write_all(&serde_json::to_vec_pretty(encrypted)?)?;
             file.sync_all()?;
-            // Creating a hard link atomically fails if a destination already exists.
-            // rename() would silently replace an existing wallet on Unix.
-            fs::hard_link(&temporary, &self.path)
-                .context("Cannot save wallet without replacing an existing file")?;
+            // Exclusive rename works on filesystems without hard links and
+            // atomically refuses to replace an existing wallet.
+            promote_wallet_file(&temporary, &self.path).context(
+                "Cannot safely save the wallet; use a writable filesystem supporting exclusive rename or hard links",
+            )?;
             #[cfg(unix)]
             File::open(parent)?.sync_all()?;
             Ok(())
@@ -493,6 +494,45 @@ fn no_follow(options: &mut OpenOptions) {
     let _ = options;
 }
 
+fn promote_wallet_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let source_name = CString::new(source.as_os_str().as_bytes())?;
+        let destination_name = CString::new(destination.as_os_str().as_bytes())?;
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                source_name.as_ptr(),
+                libc::AT_FDCWD,
+                destination_name.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result = unsafe {
+            libc::renamex_np(
+                source_name.as_ptr(),
+                destination_name.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if !error.raw_os_error().is_some_and(|code| {
+            [libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EINVAL].contains(&code)
+        }) {
+            return Err(error);
+        }
+    }
+    // Filesystems without exclusive rename may still support atomic hard-link
+    // creation. Never fall back to ordinary rename, which can overwrite a key.
+    fs::hard_link(source, destination)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +540,53 @@ mod tests {
     const PASSWORD: &str = "correct horse battery staple";
     const KEY: &str = "4646464646464646464646464646464646464646464646464646464646464646";
     const ADDRESS: &str = "0x9d8a62f656a8d1615c1294fd71e9cfb3e4855a4f";
+
+    #[test]
+    fn promoting_wallet_file_preserves_bytes_and_refuses_existing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("staged-wallet");
+        let destination = directory.path().join("wallet.json");
+        fs::write(&source, b"encrypted staged wallet").unwrap();
+        promote_wallet_file(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"encrypted staged wallet");
+        // The hard-link fallback leaves staging cleanup to the caller.
+        let _ = fs::remove_file(&source);
+        fs::write(&source, b"different encrypted wallet").unwrap();
+        assert!(promote_wallet_file(&source, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"encrypted staged wallet");
+        assert_eq!(fs::read(&source).unwrap(), b"different encrypted wallet");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promoting_wallet_file_refuses_existing_and_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("staged-wallet");
+        let destination = directory.path().join("wallet.json");
+        let target = directory.path().join("other-wallet");
+        fs::write(&source, b"encrypted staged wallet").unwrap();
+        for target_exists in [false, true] {
+            if target_exists {
+                fs::write(&target, b"existing encrypted wallet").unwrap();
+            }
+            symlink(&target, &destination).unwrap();
+            assert!(promote_wallet_file(&source, &destination).is_err());
+            assert!(
+                fs::symlink_metadata(&destination)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read(&source).unwrap(), b"encrypted staged wallet");
+            if target_exists {
+                assert_eq!(fs::read(&target).unwrap(), b"existing encrypted wallet");
+            } else {
+                assert!(!target.exists());
+            }
+            fs::remove_file(&destination).unwrap();
+        }
+    }
 
     #[test]
     fn import_reopen_password_backup_restore_and_no_overwrite() {

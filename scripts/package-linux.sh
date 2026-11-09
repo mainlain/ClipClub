@@ -198,7 +198,7 @@ try:
         'ffprobe_corresponding_source': source_records,
         'embedded': ['interface assets', 'ffprobe video validator'],
         'system_runtime': ['GTK 3', 'WebKitGTK 4.1', 'GStreamer with playback codecs'],
-        'profile': 'All launch methods: XDG_DATA_HOME/clipcrop-points, default HOME/.local/share/clipcrop-points; --data-dir overrides',
+        'profile': 'Portable: clipclub-data beside the executable. Debian launchers: --user-data uses XDG_DATA_HOME/clipcrop-points, default HOME/.local/share/clipcrop-points. --data-dir overrides either mode.',
     }
     ldd_report = os.environ.get('CLIPCROP_LINUX_LDD_REPORT')
     if ldd_report:
@@ -224,14 +224,18 @@ try:
     opt = deb_root / 'opt/clipclub'
     opt.mkdir(parents=True)
     shutil.copytree(folder, opt, dirs_exist_ok=True)
+    # Both installed launchers explicitly select writable per-user storage.
+    # The portable archive above keeps the adjacent-data default.
+    (opt / 'launch-clipclub').write_text(
+        '#!/bin/sh\nset -eu\nexec /opt/clipclub/clipclub --user-data "$@"\n')
     bin_dir = deb_root / 'usr/bin'; bin_dir.mkdir(parents=True)
     launcher = bin_dir / 'clipclub'
-    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipclub/clipclub "$@"\n')
+    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipclub/clipclub --user-data "$@"\n')
     launcher.chmod(0o755)
     applications = deb_root / 'usr/share/applications'; applications.mkdir(parents=True)
     (applications / 'local.clipclub.desktop').write_text(
         '[Desktop Entry]\nType=Application\nVersion=1.0\nName=clipclub\n'
-        'Comment=A small peer-to-peer video commons\nExec=clipclub\nIcon=clipclub\n'
+        'Comment=A small peer-to-peer video commons\nExec=/usr/bin/clipclub\nIcon=clipclub\n'
         'Terminal=false\nCategories=AudioVideo;Video;Network;\nStartupNotify=true\n')
     icons = deb_root / 'usr/share/icons/hicolor/512x512/apps'; icons.mkdir(parents=True)
     shutil.copyfile(root / 'assets/icon.png', icons / 'clipclub.png')
