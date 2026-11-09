@@ -17,29 +17,30 @@ function interfaceFixture(){
     innerHTML:'',textContent:'',value:id==='roll-wager'?'1':id==='library-sort'?'recency':'',
     paused:true,ended:false,loop:true,playCount:0,pauseCount:0,loadCount:0,
     listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},
+    showModal(){this.open=true;},close(){this.open=false;},
     classList:{toggle(){},add(){},remove(){}},
     play(){this.paused=false;this.playCount++;return Promise.resolve();},
     pause(){this.paused=true;this.pauseCount++;},load(){this.loadCount++;},removeAttribute(name){delete this[name];},
   }]));
-  const providerCalls=[],calls=[],storage=new Map();
-  const providerEvents={};
-  const provider={on(name,listener){providerEvents[name]=listener;},async request(request){providerCalls.push(request);if(request.method==='eth_accounts'||request.method==='eth_requestAccounts')return [address];if(request.method==='eth_chainId')return '0x10e6';if(request.method==='eth_sendTransaction')return hash;if(request.method==='eth_getTransactionReceipt')return {status:'0x1'};throw Error(`Unexpected wallet method ${request.method}`);}};
+  const walletCalls=[],calls=[],storage=new Map();
   const context=vm.createContext({
     document:{getElementById(id){assert.ok(elements.has(id),`Unknown element ${id}`);return elements.get(id);},querySelector(s){return s.startsWith('meta')?{content:'test-token'}:{addEventListener(){}};},querySelectorAll(){return [];},addEventListener(){}},
-    window:{ethereum:provider,addEventListener(){},localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},
+    window:{addEventListener(){},localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},
     fetch(){return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){},
   });
   vm.runInContext(source,context);
-  const fixture={crypto:{name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',rpc_url:'https://mainnet.megaeth.com/rpc',explorer_url:'https://mega.etherscan.io',balance_units:'100000000',total_supply_units:'1000000000',error:null},roll:null,settings:{display_name:'Peer',muted:true,volume:.5,bootstrap_peers:[],prefetch:true},library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a'};
-  context.fixture=fixture;context.address=address;vm.runInContext('state=fixture;page="roll";walletAccount=address;',context);
-  const app={context,fixture,elements,provider,providerCalls,providerEvents,calls,storage,run:code=>vm.runInContext(code,context),render:()=>vm.runInContext('renderRoll();',context)};
+  const fixture={crypto:{local_wallet:{exists:true,address,unlocked:true},name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',explorer_url:'https://mega.etherscan.io',balance_units:'100000000',total_supply_units:'1000000000',error:null},roll:null,settings:{display_name:'Peer',muted:true,volume:.5,bootstrap_peers:[],prefetch:true},library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a'};
+  context.fixture=fixture;context.address=address;vm.runInContext('state=fixture;page="roll";reviewNativeTransaction=async()=>"approval-1";',context);
+  const app={context,fixture,elements,walletCalls,calls,storage,send:async()=>({hash}),receipt:async()=>({status:"0x1"}),run:code=>vm.runInContext(code,context),render:()=>vm.runInContext('renderRoll();',context)};
   app.respond=async(url,options)=>{
     calls.push({url,options});
     if(url==='/api/crypto/transaction')return {ok:true,json:async()=>({from:address,to:contract,data:'0xabcd',value:'0x0',chainId:'0x10e6'})};
     if(url==='/api/roll'){fixture.roll=result();return {ok:true,json:async()=>fixture.roll};}
     if(url==='/api/rate')return {ok:true,json:async()=>({score:2})};
     if(url==='/api/crypto/pending'){fixture.crypto.pending_transaction=JSON.parse(options.body);return {ok:true,json:async()=>({})};}
-    if(url==='/api/wallet'){fixture.crypto.wallet=JSON.parse(options.body).address;return {ok:true,json:async()=>({})};}
+    if(url==='/api/wallet/send'){walletCalls.push({method:'send'});const sent=await app.send();return {ok:true,json:async()=>sent};}
+    if(url==='/api/wallet/rebroadcast')return {ok:true,json:async()=>({hash})};
+    if(url==='/api/wallet/rpc'){walletCalls.push(JSON.parse(options.body));const receipt=await app.receipt();return {ok:true,json:async()=>receipt};}
     if(url==='/api/state')return {ok:true,json:async()=>fixture};
     throw Error(`Unexpected API ${url}`);
   };
@@ -47,7 +48,7 @@ function interfaceFixture(){
   return app;
 }
 async function until(predicate){for(let i=0;i<10&&!predicate();i++)await new Promise(setImmediate);assert.ok(predicate(),'Expected operation to reach its pending stage');}
-function sends(app){return app.providerCalls.filter(call=>call.method==='eth_sendTransaction');}
+function sends(app){return app.walletCalls.filter(call=>call.method==='send');}
 
 test('money arithmetic preserves six decimals beyond the JavaScript safe integer range',()=>{
   const app=interfaceFixture();
@@ -87,31 +88,29 @@ test('leaving Roll pauses playback and returning does not replay it',async()=>{
 });
 test('invalid wagers or insufficient balances never call wallet or API',async()=>{
   const app=interfaceFixture();
-  for(const value of ['','0','-1','NaN','Infinity','1.0000001','1e2','101']){app.elements.get('roll-wager').value=value;await app.run('roll()');assert.equal(app.calls.length,0);assert.equal(app.providerCalls.length,0);}
+  for(const value of ['','0','-1','NaN','Infinity','1.0000001','1e2','101']){app.elements.get('roll-wager').value=value;await app.run('roll()');assert.equal(app.calls.length,0);assert.equal(app.walletCalls.length,0);}
   app.elements.get('roll-wager').value='.000001';app.render();assert.equal(app.elements.get('roll-button').disabled,false);
 });
-test('a persisted wallet cannot sign through a different active account',async()=>{
-  const app=interfaceFixture();app.provider.request=async request=>request.method==='eth_accounts'?['0x3333333333333333333333333333333333333333']:assert.fail('No other wallet calls expected');
-  await app.run('roll()');assert.equal(app.calls.length,0);assert.match(app.elements.get('roll-error').textContent,/Connect the wallet/);
+test('a saved address cannot sign without its built-in wallet',async()=>{
+  const app=interfaceFixture();app.fixture.crypto.local_wallet={exists:false};
+  await assert.rejects(app.run('sendCryptoTransaction("request_roll",{wager_units:"1000000"})'),/Set up your built-in wallet/);assert.equal(app.calls.length,0);assert.equal(sends(app).length,0);assert.equal(app.elements.get('wallet-dialog').open,true);
 });
-test('a wallet which stays on the wrong chain never sends a transaction',async()=>{
-  const app=interfaceFixture();app.provider.request=async request=>{
-    app.providerCalls.push(request);if(request.method==='eth_accounts')return [address];if(request.method==='eth_chainId')return '0x1';if(request.method==='wallet_switchEthereumChain')return null;assert.fail('No send expected');
-  };
-  await app.run('roll()');assert.equal(app.calls.length,0);assert.equal(sends(app).length,0);assert.match(app.elements.get('roll-error').textContent,/Switch your wallet/);
+test('a transaction for the wrong chain never reaches wallet approval',async()=>{
+  const app=interfaceFixture();app.respond=async()=>({ok:true,json:async()=>({from:address,to:contract,data:'0xabcd',value:'0x0',chainId:'0x1'})});
+  await app.run('roll()');assert.equal(sends(app).length,0);assert.match(app.elements.get('roll-error').textContent,/does not match/);
 });
 test('transactions to a different contract are rejected before the wallet prompts',async()=>{
   const app=interfaceFixture();app.respond=async()=>({ok:true,json:async()=>({from:address,to:address,data:'0xabcd',value:'0x0',chainId:'0x10e6'})});
   await app.run('roll()');assert.equal(sends(app).length,0);assert.match(app.elements.get('roll-error').textContent,/does not match/);
 });
 test('one submission sends exact units and blocks duplicate sends until inclusion and confirmation',async()=>{
-  const app=interfaceFixture();let resolveSend;const original=app.provider.request;
-  app.elements.get('roll-wager').value='2.125';app.provider.request=async request=>request.method==='eth_sendTransaction'?new Promise(resolve=>{app.providerCalls.push(request);resolveSend=resolve;}):original(request);
+  const app=interfaceFixture();let resolveSend;
+  app.elements.get('roll-wager').value='2.125';app.send=()=>new Promise(resolve=>{resolveSend=resolve;});
   const pending=app.run('roll()');await until(()=>!!resolveSend);await app.run('roll()');
   assert.equal(sends(app).length,1);assert.equal(app.elements.get('roll-button').disabled,true);assert.equal(app.elements.get('roll-wager').disabled,true);
   assert.deepEqual(JSON.parse(app.calls[0].options.body),{action:'request_roll',wager_units:'2125000'});
   assert.equal(app.calls.filter(call=>call.url==='/api/roll').length,0,'Server import must wait for inclusion');
-  resolveSend(hash);await pending;
+  resolveSend({hash});await pending;
   assert.deepEqual(JSON.parse(app.calls.find(call=>call.url==='/api/roll').options.body),{transaction_hash:hash});
   assert.match(app.elements.get('roll-result-detail').textContent,/Total payout 18\.00 ✨/);assert.equal(app.elements.get('roll-player').playCount,1);assert.equal(app.elements.get('roll-wager').disabled,false);
 });
@@ -130,7 +129,7 @@ test('failed local confirmation retains the on-chain hash and retries without pa
   const confirmations=app.calls.filter(call=>call.url==='/api/roll');assert.equal(confirmations.length,2);for(const call of confirmations)assert.deepEqual(JSON.parse(call.options.body),{transaction_hash:hash});
 });
 test('a reverted transaction is never imported as a valid roll and clears recovery',async()=>{
-  const app=interfaceFixture(),original=app.provider.request;app.provider.request=async request=>request.method==='eth_getTransactionReceipt'?{status:'0x0'}:original(request);
+  const app=interfaceFixture();app.receipt=async()=>({status:'0x0'});
   await app.run('roll()');assert.equal(app.calls.filter(call=>call.url==='/api/roll').length,0);assert.equal(app.run('pendingTransaction'),null);assert.match(app.elements.get('roll-error').textContent,/reverted/);
 });
 test('a roll can be recovered from its transaction hash without another wallet transaction',async()=>{
@@ -138,7 +137,7 @@ test('a roll can be recovered from its transaction hash without another wallet t
   assert.equal(sends(app).length,0);assert.deepEqual(JSON.parse(app.calls[0].options.body),{transaction_hash:hash});assert.equal(app.run('state.roll.id'),'1');
 });
 test('free skip works without a wallet and cannot spend archived points',async()=>{
-  const app=interfaceFixture();app.fixture.crypto.wallet=null;app.context.window.ethereum=null;app.fixture.queue=[clip];app.fixture.session=true;app.run('page="rate";current=fixture.queue[0];');
+  const app=interfaceFixture();app.fixture.crypto.wallet=null;app.fixture.queue=[clip];app.fixture.session=true;app.run('page="rate";current=fixture.queue[0];');
   await app.run('rate(0)');assert.deepEqual(JSON.parse(app.calls.find(call=>call.url==='/api/rate').options.body),{id:clip.id,score:0});assert.equal(sends(app).length,0);
 });
 test('result arriving off-page stays paused and an older state poll cannot erase it',async()=>{
@@ -149,23 +148,18 @@ test('result arriving off-page stays paused and an older state poll cannot erase
 });
 
 test('wallet connection and other token actions stay locked while a signature is pending',async()=>{
-  const app=interfaceFixture();let resolveSend;const original=app.provider.request;
-  app.provider.request=async request=>request.method==='eth_sendTransaction'?new Promise(resolve=>{app.providerCalls.push(request);resolveSend=resolve;}):original(request);
+  const app=interfaceFixture();let resolveSend;
+  app.send=()=>new Promise(resolve=>{resolveSend=resolve;});
   const pending=app.run('roll()');await until(()=>!!resolveSend);
-  await app.run('connectWallet()');assert.equal(app.providerCalls.filter(call=>call.method==='eth_requestAccounts').length,0);
+  await app.run('connectWallet()');assert.equal(app.elements.get('wallet-dialog').open,undefined);
   assert.equal(app.elements.get('connect-wallet').disabled,true);
   await assert.rejects(app.run('sendCryptoTransaction("register_clip",{clip_id:"clip-a"})'),/Another token transaction/);
-  resolveSend(hash);await pending;assert.equal(sends(app).length,1);
+  resolveSend({hash});await pending;assert.equal(sends(app).length,1);
 });
-test('an account change during signing is bound only after the original transaction is confirmed',async()=>{
-  const app=interfaceFixture();let resolveSend;const original=app.provider.request;
-  app.provider.request=async request=>request.method==='eth_sendTransaction'?new Promise(resolve=>{app.providerCalls.push(request);resolveSend=resolve;}):original(request);
-  const pending=app.run('roll()');await until(()=>!!resolveSend);
-  await app.providerEvents.accountsChanged(['0x3333333333333333333333333333333333333333']);
-  assert.equal(app.calls.filter(call=>call.url==='/api/wallet').length,0,'Binding must not change underneath the confirmation');
-  resolveSend(hash);await pending;
-  assert.ok(app.calls.findIndex(call=>call.url==='/api/roll')<app.calls.findIndex(call=>call.url==='/api/wallet'));
-  assert.equal(app.fixture.crypto.wallet,'0x3333333333333333333333333333333333333333');assert.equal(app.storage.size,0);
+test('a locked built-in wallet cannot start a roll transaction',async()=>{
+  const app=interfaceFixture();app.fixture.crypto.local_wallet.unlocked=false;
+  await assert.rejects(app.run('sendCryptoTransaction("request_roll",{wager_units:"1000000"})'),/Unlock your built-in wallet/);
+  assert.equal(app.calls.length,0);assert.equal(sends(app).length,0);assert.equal(app.elements.get('wallet-dialog').open,true);
 });
 test('unregistered clips and self-owned beneficiaries cannot prompt a token payment',async()=>{
   const app=interfaceFixture();app.fixture.queue=[{...clip,beneficiary:null}];app.fixture.session=true;app.run('page="rate";current=fixture.queue[0];');
@@ -179,9 +173,8 @@ test('pending transactions restore from server state after a new browser origin 
   await app.run('retryTransaction()');assert.equal(sends(app).length,0);assert.equal(app.fixture.crypto.pending_transaction,null);assert.equal(app.run('pendingTransaction'),null);
 });
 test('the local journal receives the hash before inclusion is queried and is cleared after import',async()=>{
-  const app=interfaceFixture();const order=[],originalProvider=app.provider.request,originalRespond=app.respond;
-  app.provider.request=async request=>{order.push(request.method);return originalProvider(request);};
+  const app=interfaceFixture();const order=[],originalRespond=app.respond;
   app.respond=async(url,options)=>{order.push(url==='/api/crypto/pending'?JSON.parse(options.body)?'persist hash':'clear hash':url);return originalRespond(url,options);};
-  await app.run('roll()');assert.ok(order.indexOf('persist hash')<order.indexOf('eth_getTransactionReceipt'));assert.ok(order.indexOf('/api/roll')<order.indexOf('clear hash'));
+  await app.run('roll()');assert.ok(order.indexOf('persist hash')<order.indexOf('/api/wallet/rpc'));assert.ok(order.indexOf('/api/roll')<order.indexOf('clear hash'));
   const save=app.calls.find(call=>call.url==='/api/crypto/pending'&&call.options.body!=='null');assert.deepEqual(JSON.parse(save.options.body),{action:'request_roll',hash,wager_units:'1000000'});
 });

@@ -231,16 +231,6 @@ impl App {
             }
         }
         app.announce().await;
-        let wallet_app = app.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(15));
-            loop {
-                tokio::select! {
-                    _ = wallet_app.shutdown.cancelled() => break,
-                    _ = interval.tick() => wallet_app.crypto.expire_local_wallet().await,
-                }
-            }
-        });
         let task_app = app.clone();
         tokio::spawn(async move {
             loop {

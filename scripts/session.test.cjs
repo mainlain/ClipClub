@@ -6,13 +6,12 @@ const address='0x1111111111111111111111111111111111111111',contract='0x222222222
 const hash='0x'+'a'.repeat(64),sessionId='b'.repeat(64);
 const clip=index=>({id:index.toString(16).padStart(64,'0'),beneficiary:recipient,title:`Clip ${index}`,extension:'mp4',duration_secs:3,width:96,height:64});
 function fixture(count=5){
-  const elements=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{id,value:id==='roll-wager'?'1':id==='library-sort'?'recency':'',textContent:'',innerHTML:'',listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},classList:{toggle(){},add(){},remove(){}},pause(){this.paused=true;},load(){},removeAttribute(name){delete this[name];},play(){this.paused=false;return Promise.resolve();}}]));
-  const scoreButtons=Array.from({length:10},(_,score)=>({dataset:{score:String(score)},disabled:false})),calls=[],walletCalls=[],events={},storage=new Map();
-  const state={crypto:{name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',rpc_url:'https://mainnet.megaeth.com/rpc',explorer_url:'https://mega.etherscan.io',balance_units:'1000000000',total_supply_units:'1000000000000000',error:null,rating_session:null,pending_transaction:null},session:true,queue:Array.from({length:count},(_,index)=>clip(index+1)),settings:{display_name:'Peer',muted:true,volume:.5,bootstrap_peers:[],prefetch:true},library:[],peers:[],addresses:[],profile_id:'peer-a',temporary_seeds:0,roll:null};
-  const provider={on(name,fn){events[name]=fn;},async request(request){walletCalls.push(request);switch(request.method){case'eth_accounts':case'eth_requestAccounts':return [address];case'eth_chainId':return '0x10e6';case'eth_sendTransaction':return hash;case'eth_getTransactionReceipt':return {status:'0x1'};default:throw Error(`Unexpected wallet call ${request.method}`);}}};
-  const context=vm.createContext({document:{body:{dataset:{page:'rate'}},getElementById(id){assert.ok(elements.has(id),id);return elements.get(id);},querySelector(selector){return selector.startsWith('meta')?{content:'token'}:{addEventListener(){},setAttribute(){},focus(){}};},querySelectorAll(selector){return selector==='[data-score]'?scoreButtons:selector==='.page'?['home','seed','rate','roll','settings'].map(page=>elements.get(`page-${page}`)):[];},addEventListener(){}},window:{ethereum:provider,addEventListener(){},scrollTo(){},localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},fetch(){return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){}});
-  vm.runInContext(source,context);context.fixture=state;context.address=address;vm.runInContext('state=fixture;page="rate";current=fixture.queue[0];walletAccount=address;',context);
-  const app={state,context,elements,scoreButtons,calls,walletCalls,events,storage,provider,confirmed:false,confirmFailure:false,reverted:false,run:code=>vm.runInContext(code,context)};
+  const elements=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{id,value:id==='roll-wager'?'1':id==='library-sort'?'recency':'',textContent:'',innerHTML:'',listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},showModal(){this.open=true;},close(){this.open=false;},classList:{toggle(){},add(){},remove(){}},pause(){this.paused=true;},load(){},removeAttribute(name){delete this[name];},play(){this.paused=false;return Promise.resolve();}}]));
+  const scoreButtons=Array.from({length:10},(_,score)=>({dataset:{score:String(score)},disabled:false})),calls=[],walletCalls=[],storage=new Map();
+  const state={crypto:{local_wallet:{exists:true,address,unlocked:true},name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',explorer_url:'https://mega.etherscan.io',balance_units:'1000000000',total_supply_units:'1000000000000000',error:null,rating_session:null,pending_transaction:null},session:true,queue:Array.from({length:count},(_,index)=>clip(index+1)),settings:{display_name:'Peer',muted:true,volume:.5,bootstrap_peers:[],prefetch:true},library:[],peers:[],addresses:[],profile_id:'peer-a',temporary_seeds:0,roll:null};
+  const context=vm.createContext({document:{body:{dataset:{page:'rate'}},getElementById(id){assert.ok(elements.has(id),id);return elements.get(id);},querySelector(selector){return selector.startsWith('meta')?{content:'token'}:{addEventListener(){},setAttribute(){},focus(){}};},querySelectorAll(selector){return selector==='[data-score]'?scoreButtons:selector==='.page'?['home','seed','rate','roll','settings'].map(page=>elements.get(`page-${page}`)):[];},addEventListener(){}},window:{addEventListener(){},scrollTo(){},localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},fetch(){return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){}});
+  vm.runInContext(source,context);context.fixture=state;context.address=address;vm.runInContext('state=fixture;page="rate";current=fixture.queue[0];reviewNativeTransaction=async()=>"approval-1";',context);
+  const app={state,context,elements,scoreButtons,calls,walletCalls,storage,send:async()=>({hash}),receipt:async()=>({status:"0x1"}),confirmed:false,confirmFailure:false,reverted:false,run:code=>vm.runInContext(code,context)};
   app.respond=async(url,options)=>{
     calls.push({url,options});const body=options?.body?JSON.parse(options.body):null;
     const ok=value=>({ok:true,json:async()=>value}),bad=message=>({ok:false,json:async()=>({error:message})});
@@ -45,13 +44,14 @@ function fixture(count=5){
     if(url==='/api/rating-session/cancel'){if(state.crypto.pending_transaction||state.crypto.rating_session?.status!=='draft')return bad('Cannot discard submitted or prepared ratings');state.crypto.rating_session=null;return ok({});}
     if(url==='/api/rating-session/reset'){assert.ok(app.reverted,'Only a canonical reverted receipt can reset');assert.equal(body.transaction_hash,hash);state.crypto.rating_session.status='draft';state.crypto.pending_transaction=null;return ok({});}
     if(url==='/api/session'){state.session=body.active;return ok({});}
-    if(url==='/api/wallet/browser')return ok({});
-    if(url==='/api/wallet'){if(state.crypto.rating_session&&body.address!==address)return bad('Queued ratings lock wallet');state.crypto.wallet=body.address;return ok({});}
+    if(url==='/api/wallet/send'){walletCalls.push({method:'send',body});return ok(await app.send());}
+    if(url==='/api/wallet/rebroadcast'){walletCalls.push({method:'rebroadcast'});return ok({hash});}
+    if(url==='/api/wallet/rpc'){walletCalls.push(body);return ok(await app.receipt());}
     throw Error(`Unexpected API ${url}`);
   };
   context.fetch=(...args)=>app.respond(...args);return app;
 }
-const sends=app=>app.walletCalls.filter(call=>call.method==='eth_sendTransaction');
+const sends=app=>app.walletCalls.filter(call=>call.method==='send');
 async function until(predicate){for(let index=0;index<15&&!predicate();index++)await new Promise(setImmediate);assert.ok(predicate(),'Pending operation was not reached');}
 async function queue(app,scores){for(const score of scores)await app.run(`rate(${score})`);}
 
@@ -66,16 +66,16 @@ test('one checkout pays all queued ratings with one send and a frozen session id
   assert.deepEqual(JSON.parse(app.calls.find(call=>call.url==='/api/crypto/transaction').options.body),{action:'rate_session',expected_session_id:sessionId,expected_rating_count:3,expected_total_units:'7000000'});
   const saved=app.calls.find(call=>call.url==='/api/crypto/pending'&&call.options.body!=='null');assert.deepEqual(JSON.parse(saved.options.body),{action:'rate_session',hash,session_id:sessionId});
 });
-test('native app queues for the selected wallet and opens a browser only at checkout',async()=>{
-  const app=fixture();app.context.window.ethereum=null;await queue(app,[2,3]);assert.equal(app.walletCalls.length,0);assert.equal(app.state.crypto.rating_session.total_units,'5000000');
-  await app.run('settleRatingSession()');assert.equal(app.calls.filter(call=>call.url==='/api/wallet/browser').length,1);assert.equal(app.state.crypto.rating_session.status,'draft');assert.equal(sends(app).length,0);
+test('a locked built-in wallet can queue ratings and opens unlock at checkout',async()=>{
+  const app=fixture();app.state.crypto.local_wallet.unlocked=false;await queue(app,[2,3]);assert.equal(app.walletCalls.length,0);assert.equal(app.state.crypto.rating_session.total_units,'5000000');
+  await app.run('settleRatingSession()');assert.equal(app.elements.get('wallet-dialog').open,true);assert.equal(app.state.crypto.rating_session.status,'draft');assert.equal(sends(app).length,0);assert.match(app.elements.get('rating-session-error').textContent,/Unlock your built-in wallet/);
 });
 test('explicit End session pauses first and checks out once; leaving Rate retains an unpaid draft',async()=>{
   const app=fixture();await queue(app,[2]);await app.run('toggleRatingSession()');assert.equal(app.state.session,false);assert.equal(sends(app).length,1);assert.ok(app.calls.findIndex(call=>call.url==='/api/session')<app.calls.findIndex(call=>call.url==='/api/crypto/transaction'));
   const leaving=fixture();await queue(leaving,[2]);await leaving.run('navigate("home")');assert.equal(leaving.state.session,false);assert.equal(sends(leaving).length,0);assert.equal(leaving.state.crypto.rating_session.total_units,'2000000');assert.equal(leaving.elements.get('rating-session-panel').hidden,false);
 });
 test('wallet rejection unlocks the same unpaid draft and preserves every rating',async()=>{
-  const app=fixture();await queue(app,[2,3]);const original=app.provider.request;app.provider.request=async request=>{if(request.method==='eth_sendTransaction'){const error=Error('User rejected transaction');error.code=4001;throw error;}return original(request);};
+  const app=fixture();await queue(app,[2,3]);app.run('reviewNativeTransaction=async()=>{const error=Error("User rejected transaction");error.code=4001;throw error;}');
   await app.run('settleRatingSession()');assert.equal(app.state.crypto.rating_session.status,'draft');assert.equal(app.state.crypto.rating_session.ratings.length,2);assert.equal(app.state.crypto.pending_transaction,null);assert.equal(app.calls.filter(call=>call.url==='/api/rating-session/unlock').length,1);assert.equal(app.confirmed,false);
 });
 test('builder estimate failure leaves the unpaid draft without unlocking another preparation',async()=>{
@@ -83,7 +83,7 @@ test('builder estimate failure leaves the unpaid draft without unlocking another
   await app.run('settleRatingSession()');assert.equal(app.state.crypto.rating_session.status,'draft');assert.equal(sends(app).length,0);assert.equal(app.state.crypto.rating_session.ratings.length,1);assert.equal(app.calls.filter(call=>call.url==='/api/rating-session/unlock').length,0);
 });
 test('unknown send failures freeze preparation and cannot silently discard or edit the batch',async()=>{
-  const app=fixture();await queue(app,[2]);const original=app.provider.request;app.provider.request=async request=>{if(request.method==='eth_sendTransaction')throw Error('Wallet network response lost');return original(request);};
+  const app=fixture();await queue(app,[2]);app.send=async()=>{throw Error('Wallet network response lost');};
   await app.run('settleRatingSession()');assert.equal(app.state.crypto.rating_session.status,'prepared');assert.equal(app.calls.filter(call=>call.url==='/api/rating-session/unlock').length,0);
   const count=app.calls.length;await app.run('rate(3)');await app.run('discardRatingSession()');assert.equal(app.calls.length,count);assert.equal(app.state.crypto.rating_session.ratings.length,1);
 });
@@ -92,7 +92,7 @@ test('confirmation retry imports the submitted batch without another payment or 
   const before=app.calls.length;await app.run('rate(1)');assert.equal(app.calls.length,before);app.confirmFailure=false;await app.run('settleRatingSession()');assert.equal(sends(app).length,1);assert.equal(app.state.crypto.rating_session,null);assert.equal(app.storage.size,0);
 });
 test('canonical reverted submission resets to the unpaid draft without generic pending clearing',async()=>{
-  const app=fixture();await queue(app,[2,3]);app.reverted=true;const original=app.provider.request;app.provider.request=async request=>request.method==='eth_getTransactionReceipt'?{status:'0x0'}:original(request);
+  const app=fixture();await queue(app,[2,3]);app.reverted=true;app.receipt=async()=>({status:'0x0'});
   await app.run('settleRatingSession()');assert.equal(app.state.crypto.rating_session.status,'draft');assert.equal(app.state.crypto.rating_session.ratings.length,2);assert.equal(app.state.crypto.pending_transaction,null);assert.equal(app.calls.filter(call=>call.url==='/api/rating-session/reset').length,1);assert.equal(app.calls.filter(call=>call.url==='/api/crypto/pending'&&call.options.body==='null').length,0);
 });
 test('a full 100-rating batch checks out in one transaction and a 101st rating cannot queue',async()=>{
@@ -103,10 +103,9 @@ test('queued reservations reduce available balance and prevent another rating or
   const app=fixture();app.state.crypto.balance_units='5000000';await queue(app,[3]);assert.equal(app.elements.get('balance').textContent,'2.00 ✨');assert.equal(app.scoreButtons[3].disabled,true);const before=app.calls.length;await app.run('rate(3)');assert.equal(app.calls.length,before);
   app.run('page="roll"');app.elements.get('roll-wager').value='3';await app.run('roll()');assert.equal(app.calls.length,before);assert.equal(app.walletCalls.length,0);
 });
-test('queued ratings lock the selected wallet without changing the server wallet binding',async()=>{
-  const app=fixture();await queue(app,[2]);await app.events.accountsChanged(['0x3333333333333333333333333333333333333333']);assert.equal(app.calls.filter(call=>call.url==='/api/wallet').length,0);assert.equal(app.state.crypto.wallet,address);
-  const original=app.provider.request;app.provider.request=async request=>request.method==='eth_requestAccounts'?['0x3333333333333333333333333333333333333333']:original(request);
-  await app.run('connectWallet()');assert.equal(app.calls.filter(call=>call.url==='/api/wallet').length,0);assert.equal(app.state.crypto.wallet,address);
+test('opening wallet management keeps queued ratings and the built-in account',async()=>{
+  const app=fixture();await queue(app,[2]);const before=app.calls.length;
+  await app.run('connectWallet()');assert.equal(app.elements.get('wallet-dialog').open,true);assert.equal(app.calls.length,before);assert.equal(app.state.crypto.wallet,address);assert.equal(app.state.crypto.rating_session.total_units,'2000000');
 });
 test('a submitted batch restored after restart only confirms its saved hash',async()=>{
   const app=fixture();await queue(app,[2,3]);app.state.crypto.rating_session.status='submitted';app.state.crypto.pending_transaction={action:'rate_session',hash,session_id:sessionId};app.run('pendingTransaction=null;renderWallet();');assert.equal(app.run('pendingTransaction.session_id'),sessionId);
@@ -114,12 +113,12 @@ test('a submitted batch restored after restart only confirms its saved hash',asy
 });
 test('discard only clears an unsigned draft and free skips work with no selected wallet',async()=>{
   const app=fixture();await queue(app,[2]);await app.run('discardRatingSession()');assert.equal(app.state.crypto.rating_session,null);assert.equal(app.state.crypto.balance_units,'1000000000');assert.equal(app.walletCalls.length,0);
-  app.state.crypto.wallet=null;app.context.window.ethereum=null;await app.run('rate(0)');assert.equal(app.state.crypto.rating_session,null);assert.equal(app.walletCalls.length,0);
+  app.state.crypto.wallet=null;await app.run('rate(0)');assert.equal(app.state.crypto.rating_session,null);assert.equal(app.walletCalls.length,0);
 });
 test('queue edits and a second checkout stay blocked while the wallet signature is pending',async()=>{
-  const app=fixture();await queue(app,[2]);let resolveSend;const original=app.provider.request;app.provider.request=async request=>request.method==='eth_sendTransaction'?new Promise(resolve=>{app.walletCalls.push(request);resolveSend=resolve;}):original(request);
+  const app=fixture();await queue(app,[2]);let resolveSend;app.send=()=>new Promise(resolve=>{resolveSend=resolve;});
   const checkout=app.run('settleRatingSession()');await until(()=>!!resolveSend);const before=app.calls.length;await app.run('rate(3)');await app.run('settleRatingSession()');await app.run('discardRatingSession()');assert.equal(app.calls.length,before);assert.equal(sends(app).length,1);assert.equal(app.state.crypto.rating_session.ratings.length,1);
-  resolveSend(hash);await checkout;assert.equal(sends(app).length,1);
+  resolveSend({hash});await checkout;assert.equal(sends(app).length,1);
 });
 
 test('rapid End session clicks stop once and cannot restart seeding or send twice',async()=>{
@@ -155,9 +154,9 @@ test('a builder rejection cannot unlock another window’s prepared wallet trans
   await app.run('settleRatingSession()');assert.equal(sends(app).length,0);assert.equal(app.state.crypto.rating_session.status,'prepared');assert.equal(app.calls.filter(call=>call.url==='/api/rating-session/unlock').length,0);assert.equal(app.elements.get('discard-rating-session').disabled,true);
 });
 
-test('native app hands a saved submitted session to the wallet browser without another send',async()=>{
-  const app=fixture();await queue(app,[2]);app.state.crypto.rating_session.status='submitted';app.state.crypto.pending_transaction={action:'rate_session',hash,session_id:sessionId};app.run('pendingTransaction=null;renderWallet();');app.context.window.ethereum=null;
-  await app.run('settleRatingSession()');assert.equal(app.calls.filter(call=>call.url==='/api/wallet/browser').length,1);assert.equal(app.state.crypto.rating_session.status,'submitted');assert.equal(sends(app).length,0);
+test('a locked built-in wallet confirms a saved submitted session inside the app',async()=>{
+  const app=fixture();await queue(app,[2]);app.state.crypto.rating_session.status='submitted';app.state.crypto.pending_transaction={action:'rate_session',hash,session_id:sessionId};app.state.crypto.local_wallet.unlocked=false;app.run('pendingTransaction=null;renderWallet();');
+  await app.run('settleRatingSession()');assert.equal(app.state.crypto.rating_session,null);assert.equal(sends(app).length,0);assert.equal(app.state.crypto.local_wallet.unlocked,false);assert.equal(app.walletCalls.filter(call=>call.method==='rebroadcast').length,1);
 });
 
 test('a prepared session restored after restart cannot open a second wallet prompt',async()=>{
@@ -171,7 +170,7 @@ test('explicitly confirming cancelled wallet approval returns the same unpaid dr
   await app.run('unlockRatingSession()');assert.equal(app.state.crypto.rating_session.status,'draft');assert.equal(app.state.crypto.rating_session.ratings.length,2);assert.equal(app.state.crypto.rating_session.total_units,'5000000');assert.equal(app.walletCalls.length,0);assert.equal(app.calls.filter(call=>call.url==='/api/rating-session/unlock').length,1);assert.equal(app.elements.get('unlock-rating-session').hidden,true);assert.equal(app.elements.get('discard-rating-session').disabled,false);
 });
 test('native prepared-session recovery remains visible and never resubmits approval',async()=>{
-  const app=fixture();await queue(app,[2]);app.state.crypto.rating_session.status='prepared';app.context.window.ethereum=null;app.run('renderWallet();');
+  const app=fixture();await queue(app,[2]);app.state.crypto.rating_session.status='prepared';app.run('renderWallet();');
   assert.equal(app.elements.get('rating-session-recovery').open,true);assert.equal(app.elements.get('rating-session-recover').disabled,false);assert.equal(app.elements.get('settle-rating-session').disabled,true);assert.match(app.elements.get('rating-session-help').textContent,/Reject any open wallet approval first/);
   app.elements.get('rating-session-hash').value=hash;await app.run('recoverRatingSession()');assert.equal(app.state.crypto.rating_session,null);assert.equal(app.walletCalls.length,0);
 });

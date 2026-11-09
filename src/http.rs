@@ -61,8 +61,6 @@ pub async fn serve(
         .route("/api/crypto/transaction", post(crypto_transaction))
         .route("/api/crypto/pending", post(crypto_pending))
         .route("/api/crypto/confirm-account", post(confirm_account))
-        .route("/api/wallet", post(wallet))
-        .route("/api/wallet/browser", post(wallet_browser))
         .route(
             "/api/wallet/create",
             post(wallet_create).layer(DefaultBodyLimit::max(32_768)),
@@ -79,7 +77,6 @@ pub async fn serve(
             "/api/wallet/unlock",
             post(wallet_unlock).layer(DefaultBodyLimit::max(32_768)),
         )
-        .route("/api/wallet/lock", post(wallet_lock))
         .route("/api/wallet/backup", post(wallet_backup))
         .route(
             "/api/wallet/send",
@@ -207,20 +204,6 @@ async fn crypto_pending(
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Wallet {
-    address: Option<String>,
-}
-async fn wallet(State(state): State<HttpState>, Json(input): Json<Wallet>) -> ApiResult {
-    state.app.crypto.set_wallet(input.address).await?;
-    state.app.announce().await;
-    Ok(Json(json!({"ok":true})))
-}
-async fn wallet_browser(State(state): State<HttpState>) -> ApiResult {
-    crate::update::open_browser(&format!("http://{}/", state.host))?;
-    Ok(Json(json!({"ok":true})))
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct WalletPassword {
     password: String,
 }
@@ -302,10 +285,6 @@ async fn wallet_unlock(
         .await?;
     state.app.announce().await;
     Ok(Json(result))
-}
-async fn wallet_lock(State(state): State<HttpState>) -> ApiResult {
-    state.app.crypto.lock_local_wallet().await?;
-    Ok(Json(json!({"ok":true})))
 }
 async fn wallet_backup(State(state): State<HttpState>) -> ApiResult {
     Ok(Json(state.app.crypto.wallet_backup().await?))

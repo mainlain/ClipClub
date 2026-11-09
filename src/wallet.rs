@@ -22,11 +22,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 use zeroize::Zeroizing;
 
-const AUTO_LOCK: Duration = Duration::from_secs(15 * 60);
 const MAX_KEYSTORE_BYTES: u64 = 16 * 1024;
 const MEMORY_KIB: u32 = 64 * 1024;
 const ITERATIONS: u32 = 3;
@@ -125,7 +123,6 @@ pub struct WalletVault {
     path: PathBuf,
     encrypted: Option<EncryptedWallet>,
     key: Option<Zeroizing<[u8; 32]>>,
-    last_used: Option<Instant>,
 }
 
 impl WalletVault {
@@ -170,17 +167,14 @@ impl WalletVault {
             path,
             encrypted,
             key: None,
-            last_used: None,
         })
     }
 
-    pub fn status(&mut self) -> Value {
-        self.expire();
+    pub fn status(&self) -> Value {
         json!({
             "exists": self.encrypted.is_some(),
             "address": self.address(),
             "unlocked": self.key.is_some(),
-            "auto_lock_seconds": AUTO_LOCK.as_secs(),
         })
     }
 
@@ -218,7 +212,6 @@ impl WalletVault {
     }
 
     pub fn unlock(&mut self, password: &str) -> Result<String> {
-        self.lock();
         check_password(password)?;
         let wallet = self
             .encrypted
@@ -227,13 +220,11 @@ impl WalletVault {
         let key = wallet.decrypt(password)?;
         let address = wallet.address.clone();
         self.key = Some(key);
-        self.last_used = Some(Instant::now());
         Ok(address)
     }
 
     pub fn lock(&mut self) {
         self.key = None;
-        self.last_used = None;
     }
 
     /// Only ciphertext and public metadata are returned, even while unlocked.
@@ -261,7 +252,6 @@ impl WalletVault {
         let address = encrypted.address.clone();
         self.encrypted = Some(encrypted);
         self.key = Some(key);
-        self.last_used = Some(Instant::now());
         Ok(address)
     }
 
@@ -276,7 +266,6 @@ impl WalletVault {
         value: U256,
         data: &[u8],
     ) -> Result<SignedTransaction> {
-        self.expire();
         ensure!(chain_id > 0, "A nonzero Ethereum chain ID is required");
         ensure!(gas_limit > 0, "A nonzero gas limit is required");
         ensure!(data.len() <= 1_048_576, "Transaction data is too large");
@@ -302,20 +291,10 @@ impl WalletVault {
         let signed = transaction.into_signed(signature);
         let mut raw = Vec::new();
         signed.rlp_encode(&mut raw);
-        self.last_used = Some(Instant::now());
         Ok(SignedTransaction {
             raw: format!("0x{}", hex::encode(raw)),
             hash: format!("{:#x}", signed.hash()),
         })
-    }
-
-    fn expire(&mut self) {
-        if self
-            .last_used
-            .is_some_and(|instant| instant.elapsed() >= AUTO_LOCK)
-        {
-            self.lock();
-        }
     }
 
     fn ensure_empty(&self) -> Result<()> {
@@ -368,7 +347,6 @@ impl WalletVault {
         self.persist_new(&encrypted)?;
         self.encrypted = Some(encrypted);
         self.key = Some(key);
-        self.last_used = Some(Instant::now());
         Ok(address)
     }
 
@@ -570,8 +548,39 @@ mod tests {
         let address = wallet.create(PASSWORD).unwrap();
         assert_ne!(address, other.create(PASSWORD).unwrap());
         assert_eq!(address.len(), 42);
-        wallet.last_used = Some(Instant::now() - AUTO_LOCK);
+        assert_eq!(wallet.status()["unlocked"], true);
+    }
+
+    #[test]
+    fn wallet_remains_unlocked_during_the_app_session_and_reopens_locked() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut wallet = WalletVault::open(directory.path()).unwrap();
+        wallet.import(KEY, PASSWORD).unwrap();
+        for _ in 0..3 {
+            assert_eq!(wallet.status()["unlocked"], true);
+            wallet.encrypted_backup().unwrap();
+            wallet
+                .sign_legacy(4326, 0, 1, 21_000, ADDRESS, U256::ZERO, &[])
+                .unwrap();
+        }
+        // A failed redundant unlock must not lock an active app session.
+        assert!(wallet.unlock("incorrect wallet password").is_err());
+        assert_eq!(wallet.status()["unlocked"], true);
+
+        wallet.lock();
         assert_eq!(wallet.status()["unlocked"], false);
+        assert!(
+            wallet
+                .sign_legacy(4326, 0, 1, 21_000, ADDRESS, U256::ZERO, &[])
+                .is_err()
+        );
+        drop(wallet);
+        let mut reopened = WalletVault::open(directory.path()).unwrap();
+        assert_eq!(reopened.status()["unlocked"], false);
+        assert!(reopened.unlock("incorrect wallet password").is_err());
+        assert_eq!(reopened.status()["unlocked"], false);
+        assert_eq!(reopened.unlock(PASSWORD).unwrap(), ADDRESS);
+        assert_eq!(reopened.status()["unlocked"], true);
     }
 
     #[test]

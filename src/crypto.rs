@@ -1,4 +1,4 @@
-//! MegaETH adapter with encrypted local signing and optional browser wallets.
+//! MegaETH adapter with encrypted local signing.
 use crate::core::ChainPayment;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -282,7 +282,6 @@ pub struct Crypto {
     pub chain_id: u64,
     contract: Option<String>,
     rpc: String,
-    public_rpc: &'static str,
     explorer: &'static str,
     client: reqwest::Client,
     path: PathBuf,
@@ -381,12 +380,6 @@ impl Crypto {
         *self.approval.lock().await = None;
         *self.cache.lock().await = None;
         Ok(())
-    }
-    pub async fn expire_local_wallet(&self) {
-        let _guard = self.operation.lock().await;
-        if self.local_status().await["unlocked"] != true {
-            *self.approval.lock().await = None;
-        }
     }
     pub async fn wallet_backup(&self) -> Result<Value> {
         self.vault_task(|vault| vault.encrypted_backup()).await
@@ -614,7 +607,6 @@ impl Crypto {
             chain_id,
             contract,
             rpc,
-            public_rpc,
             explorer,
             path,
             journal: Mutex::new(journal),
@@ -639,9 +631,10 @@ impl Crypto {
             .await
             .wallet
             .clone()
-            .context("Connect your MegaETH wallet first")
+            .context("Set up your built-in wallet first")
     }
-    pub async fn set_wallet(&self, wallet: Option<String>) -> Result<()> {
+    #[cfg(test)]
+    async fn set_wallet(&self, wallet: Option<String>) -> Result<()> {
         let _guard = self.operation.lock().await;
         let wallet = wallet.map(|w| address(&w)).transpose()?;
         self.select_wallet(wallet).await
@@ -757,7 +750,7 @@ impl Crypto {
         let wallet = snapshot
             .wallet
             .as_ref()
-            .context("Connect your MegaETH wallet first")?;
+            .context("Set up your built-in wallet first")?;
         ensure!(
             snapshot.pending_transaction.is_none(),
             "Recover the pending transaction first"
@@ -1096,7 +1089,7 @@ impl Crypto {
                 journal.rating_session.clone(),
             )
         };
-        let mut state = json!({"name":"좋아","symbol":"✨","decimals":6,"chain_id":self.chain_id,"chain_hex":format!("0x{:x}",self.chain_id),"chain_name":if self.chain_id==4326 {"MegaETH"} else {"MegaETH Testnet"},"rpc_url":self.public_rpc,"explorer_url":self.explorer,"contract":self.contract,"configured":self.contract.is_some(),"wallet":wallet,"balance_units":"0","native_balance_wei":"0","total_supply_units":"0","rating_credit_units":"0","total_rating_minted_units":"0","error":null});
+        let mut state = json!({"name":"좋아","symbol":"✨","decimals":6,"chain_id":self.chain_id,"chain_hex":format!("0x{:x}",self.chain_id),"chain_name":if self.chain_id==4326 {"MegaETH"} else {"MegaETH Testnet"},"explorer_url":self.explorer,"contract":self.contract,"configured":self.contract.is_some(),"wallet":wallet,"balance_units":"0","native_balance_wei":"0","total_supply_units":"0","rating_credit_units":"0","total_rating_minted_units":"0","error":null});
         state["local_wallet"] = self.local_status().await;
         state["pending_transaction"] =
             serde_json::to_value(&pending_transaction).unwrap_or(Value::Null);
@@ -1223,7 +1216,7 @@ impl Crypto {
     }
     async fn refresh_roll(&self, wallet: &str) -> Result<()> {
         let _guard = self.operation.lock().await;
-        // Recover an outstanding wager from the contract even if the browser closed immediately after signing.
+        // Recover an outstanding wager from the contract even if the app closed immediately after signing.
         let pending = self
             .call("pendingRoll(address)", &address_word(wallet)?)
             .await?;
@@ -2654,7 +2647,6 @@ mod tests {
             chain_id: 6343,
             contract: Some(CONTRACT.into()),
             rpc: endpoint,
-            public_rpc: "https://carrot.megaeth.com/rpc",
             explorer: "https://testnet-mega.etherscan.io",
             client: reqwest::Client::new(),
             path: directory.path().join("journal.json"),

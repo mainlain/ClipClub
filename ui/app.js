@@ -21,7 +21,7 @@ function toast(message){$('toast').textContent=message;$('toast').hidden=false;c
 function mediaUrl(id){return `/api/video/${encodeURIComponent(id)}?token=${token}`;}
 const TOKEN_SCALE=1000000n;
 const MAX_TOKEN_UNITS=(1n<<256n)-1n;
-let walletBusy=false, transactionBusy=false, deferredWalletAddress=undefined, walletAccount=null, walletPhase='', pendingTransaction=null;
+let walletBusy=false, transactionBusy=false, walletPhase='', pendingTransaction=null;
 function tokenUnits(raw){
   const text=String(raw??'').trim();
   if(!/^(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$/.test(text))return null;
@@ -36,38 +36,43 @@ function fmtTokens(units,minimum=2){
   const fraction=(value%TOKEN_SCALE).toString().padStart(6,'0').replace(/0+$/,'').padEnd(minimum,'0');
   return `${negative?'−':''}${whole}${fraction?`.${fraction}`:''}`;
 }
-function browserWalletProvider(){return window.ethereum?.request?window.ethereum:null;}
 function localWallet(){return state?.crypto?.local_wallet||null;}
 function nativeWalletSelected(){return !!localWallet()?.exists&&!!localWallet().address&&localWallet().address.toLowerCase()===state?.crypto?.wallet?.toLowerCase();}
-const nativeWalletProvider={async request({method,params=[]}){
-  if(method==='eth_accounts')return nativeWalletSelected()?[state.crypto.wallet]:[];
-  if(method==='eth_chainId')return state.crypto.chain_hex;
-  if(method==='eth_getTransactionReceipt')return api('wallet/rpc',{method,params});
-  throw Error('This built-in wallet request is not supported.');
-}};
-function walletProvider(){return nativeWalletSelected()?nativeWalletProvider:browserWalletProvider();}
-function walletAvailable(){return !!state?.crypto?.configured&&!state.crypto.error&&!!state.crypto.wallet&&(nativeWalletSelected()?!!localWallet().unlocked:!!walletProvider()&&walletAccount?.toLowerCase()===state.crypto.wallet.toLowerCase());}
+function walletAvailable(){return !!state?.crypto?.configured&&!state.crypto.error&&nativeWalletSelected()&&!!localWallet().unlocked;}
 function fmtEth(raw){
   let value;try{value=BigInt(raw??'0');}catch{return '—';}
   const scale=1000000000000000000n,whole=value/scale,fraction=(value%scale).toString().padStart(18,'0').replace(/0+$/,'');
   return `${whole}${fraction?`.${fraction}`:''} ETH`;
 }
-let walletFormBusy=false,nativeApproval=null;
+let walletFormBusy=false,nativeApproval=null,walletStartupPending=false;
+function walletStartupRequired(){return !state||!!localWallet()&&!localWallet().unlocked;}
+function syncStartupWallet(){
+  if(walletStartupRequired()){
+    walletStartupPending=true;
+    if(!$('wallet-dialog').open)openNativeWallet();
+  }else if(walletStartupPending){
+    walletStartupPending=false;
+    if($('wallet-dialog').open)$('wallet-dialog').close();
+  }
+}
 function clearWalletSecrets(){for(const id of ['wallet-private-key','wallet-password','wallet-password-confirm','wallet-backup-json','wallet-backup-file'])$(id).value='';}
 function renderNativeWallet(){
   const local=localWallet(),exists=!!local?.exists,unlocked=!!local?.unlocked;
-  $('native-wallet-status').textContent=exists?`Built-in wallet · ${unlocked?'unlocked':'locked'}. Locks after ${Math.round((local.auto_lock_seconds||900)/60)} minutes without wallet activity.`:'Create a wallet or import your Ethereum private key to pay and receive rewards inside the app.';
+  $('native-wallet-status').textContent=exists?`Built-in wallet · ${unlocked?'unlocked until you quit the app':'unlock when starting the app'}.`:'Set up your wallet when starting the app to pay and receive rewards.';
   $('native-gas-balance').textContent=nativeWalletSelected()?`Gas balance · ${fmtEth(state.crypto.native_balance_wei)} on ${state.crypto.chain_name}`:'';
-  $('manage-wallet').textContent=exists?(unlocked?'Manage built-in wallet':'Unlock built-in wallet'):'Set up wallet';
+  $('manage-wallet').textContent='Wallet details';$('manage-wallet').hidden=!unlocked;
   $('manage-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
-  $('copy-wallet-address').hidden=!exists;$('lock-wallet').hidden=!unlocked;$('backup-wallet').hidden=!exists;
-  $('lock-wallet').disabled=walletFormBusy||transactionBusy||rollBusy||busy;$('backup-wallet').disabled=walletFormBusy;
+  $('copy-wallet-address').hidden=!exists;$('backup-wallet').hidden=!exists;
+  $('backup-wallet').disabled=walletFormBusy;
   if(nativeApproval&&(!nativeWalletSelected()||!unlocked))finishNativeApproval(false);
+  syncStartupWallet();
   if($('wallet-dialog').open)renderWalletDialog();
 }
 function renderWalletDialog(){
   const local=localWallet(),exists=!!local?.exists,unlocked=!!local?.unlocked,mode=$('wallet-mode').value||'create';
-  $('wallet-dialog-title').textContent=exists?'Your built-in wallet':'Set up your wallet';
+  $('wallet-dialog-title').textContent=unlocked?'Your built-in wallet':exists?'Welcome back':'Welcome to clipclub';
+  $('wallet-dialog-help').textContent=unlocked?'Your private key is encrypted on this device. Your wallet stays unlocked until you quit the app.':exists?'Enter your password to unlock your wallet and open the app. It stays unlocked until you quit.':'Create, import, or restore a wallet to get started. Your password encrypts it on this device and unlocks it each time you open the app.';
+  $('close-wallet').hidden=walletStartupRequired();$('close-wallet').disabled=walletFormBusy;
   $('wallet-dialog-account').hidden=!exists;$('wallet-receive-address').textContent=local?.address||'';
   $('wallet-setup-options').hidden=exists;
   $('wallet-private-key-row').hidden=exists||mode!=='import';$('wallet-restore-row').hidden=exists||mode!=='restore';
@@ -76,14 +81,13 @@ function renderWalletDialog(){
   $('wallet-password').autocomplete=exists||mode==='restore'?'current-password':'new-password';
   $('wallet-password-label').textContent=exists?'Wallet password':mode==='restore'?'Backup password':'New wallet password · at least 12 characters';
   $('wallet-password-confirm-row').hidden=exists||mode==='restore';$('wallet-password-confirm').required=!exists&&mode!=='restore';
-  $('wallet-submit').hidden=unlocked;$('wallet-submit').textContent=walletFormBusy?'Working…':exists?'Unlock wallet':mode==='import'?'Import wallet':mode==='restore'?'Restore wallet':'Create wallet';
+  $('wallet-submit').hidden=unlocked;$('wallet-submit').textContent=walletFormBusy?'Working…':exists?'Unlock and continue':mode==='import'?'Import wallet':mode==='restore'?'Restore wallet':'Create wallet';
   $('wallet-submit').disabled=walletFormBusy;$('wallet-mode').disabled=walletFormBusy;
-  $('wallet-dialog-backup').hidden=!exists;$('wallet-dialog-lock').hidden=!unlocked;
-  $('wallet-select-native').hidden=!exists||nativeWalletSelected();$('wallet-select-native').disabled=walletFormBusy||transactionBusy||walletSelectionLocked();
-  $('wallet-dialog-backup').disabled=walletFormBusy;$('wallet-dialog-lock').disabled=walletFormBusy||transactionBusy;
+  $('wallet-dialog-backup').hidden=!exists;
+  $('wallet-dialog-backup').disabled=walletFormBusy;
 }
 function openNativeWallet(){
-  if(walletFormBusy)return;
+  if(!state||walletFormBusy)return;
   clearWalletSecrets();$('wallet-form-error').hidden=true;renderWalletDialog();
   if(!$('wallet-dialog').open)$('wallet-dialog').showModal();
 }
@@ -102,11 +106,6 @@ async function submitNativeWallet(event){
     toast(mode==='unlock'?'Built-in wallet unlocked.':'Wallet saved on this device. Download an encrypted backup and keep its password safe.');
   }catch(error){$('wallet-form-error').textContent=error instanceof SyntaxError?'The encrypted backup is not valid JSON.':error.message;$('wallet-form-error').hidden=false;}
   finally{body=null;walletFormBusy=false;clearWalletSecrets();renderWalletDialog();renderWallet();}
-}
-async function lockNativeWallet(){
-  if(walletFormBusy||transactionBusy||rollBusy||busy)return;
-  finishNativeApproval(false);clearWalletSecrets();walletFormBusy=true;
-  try{await api('wallet/lock',{});await refresh();toast('Built-in wallet locked.');}catch(error){toast(error.message);}finally{walletFormBusy=false;renderWallet();}
 }
 async function backupNativeWallet(){
   if(walletFormBusy||!localWallet()?.exists)return;
@@ -147,8 +146,7 @@ function ratingSession(){return state?.crypto?.rating_session||null;}
 function queuedRatingCount(){return ratingSession()?.ratings?.length||0;}
 function queuedTokenUnits(){try{return BigInt(ratingSession()?.total_units||'0');}catch{return 0n;}}
 function spendableTokenBalance(){const balance=currentTokenBalance(),reserved=queuedTokenUnits();return balance>reserved?balance-reserved:0n;}
-function ratingWalletSelected(){return !!state?.crypto?.configured&&!state.crypto.error&&/^0x[a-fA-F0-9]{40}$/.test(state.crypto.wallet||'');}
-function walletSelectionLocked(){return queuedRatingCount()>0||!!pendingTransaction;}
+function ratingWalletSelected(){return !!state?.crypto?.configured&&!state.crypto.error&&nativeWalletSelected();}
 function ratingDraftEditable(){return !ratingSession()||ratingSession().status==='draft';}
 function clipCanReceiveRating(clip){return clip?.distribution_preview?clip.distribution_preview.seeders>0:!!clip?.beneficiary&&clip.beneficiary.toLowerCase()!==state.crypto?.wallet?.toLowerCase();}
 function seederPaymentsFit(){
@@ -174,15 +172,6 @@ function renderRatingSession(){
   if(recoveryState!==ratingRecoveryState){ratingRecoveryState=recoveryState;if(prepared||submitted)$('rating-session-recovery').open=true;}
   $('rating-session-help').textContent=submitted?'Your submitted batch is frozen. Confirm its transaction before continuing; retrying confirmation never pays again.':prepared?'Wallet approval is unresolved. Recover its transaction hash below if it was submitted. Reject any open wallet approval first. Then return this unpaid session to editing.':'Ratings are saved on this device and remain unpaid until one session transaction is confirmed. Leaving Rate keeps the queue.';
 }
-async function applyDeferredWallet(){
-  if(deferredWalletAddress===undefined)return;
-  const address=deferredWalletAddress;deferredWalletAddress=undefined;
-  if(walletSelectionLocked()&&address?.toLowerCase()!==state.crypto?.wallet?.toLowerCase()){
-    toast('Settle or discard the queued ratings and confirm pending transactions before switching wallets.');return;
-  }
-  pendingTransaction=null;
-  try{await api('wallet',{address});await refresh();}catch(error){toast(error.message);}
-}
 async function resetRevertedTransaction(record){
   if(record?.action==='rate_session'){
     await api('rating-session/reset',{transaction_hash:record.hash});
@@ -193,7 +182,6 @@ async function resetRevertedTransaction(record){
 async function settleRatingSession(){
   if(busy||walletBusy||rollBusy||transactionBusy||!queuedRatingCount())return;
   if(ratingSession().status==='prepared'&&!pendingTransaction){toast('This session already has an unresolved wallet approval. Recover its transaction or cancel that approval before returning to editing.');return;}
-  if(!walletProvider()){await openWalletBrowser();toast('Your saved session is ready in the wallet browser. Settle it once or confirm its submitted transaction.');return;}
   if(pendingTransaction?.action==='rate_session'){await retryTransaction();return;}
   if(ratingSession().status==='submitted'){toast('Recover the submitted session transaction hash to confirm its payment.');return;}
   busy=true;$('rating-session-error').hidden=true;render();
@@ -258,44 +246,16 @@ async function forgetTransaction(){
   if(state?.crypto)state.crypto.pending_transaction=null;
   rememberTransaction(null);
 }
-async function openWalletBrowser(){try{await api('wallet/browser',{});toast('Opened the app in your default browser. Connect a MegaETH wallet there.');}catch(error){toast(error.message);}}
 async function requireWallet({readOnly=false}={}){
-  const crypto=state?.crypto,provider=walletProvider();
+  const crypto=state?.crypto;
   if(!crypto?.configured)throw Error('The 좋아 contract has not been configured. See Settings for deployment status.');
   if(crypto.error)throw Error(crypto.error);
-  if(nativeWalletSelected()){if(!localWallet().unlocked&&!readOnly){openNativeWallet();throw Error('Unlock your built-in wallet, then try this transaction again.');}return nativeWalletProvider;}
-  if(!provider)throw Error('Open the app in a browser with an Ethereum wallet, then connect it.');
-  const accounts=await provider.request({method:'eth_accounts'});
-  if(!accounts?.[0]||accounts[0].toLowerCase()!==crypto.wallet?.toLowerCase())throw Error('Connect the wallet you want to use before signing.');
-  walletAccount=accounts[0];
-  const chain=await provider.request({method:'eth_chainId'});
-  if(BigInt(chain)!==BigInt(crypto.chain_id)){
-    try{await provider.request({method:'wallet_switchEthereumChain',params:[{chainId:crypto.chain_hex}]});}
-    catch(error){
-      if(Number(error.code)!==4902)throw error;
-      await provider.request({method:'wallet_addEthereumChain',params:[{chainId:crypto.chain_hex,chainName:crypto.chain_name,nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18},rpcUrls:[crypto.rpc_url],blockExplorerUrls:[crypto.explorer_url]}]});
-    }
-  }
-  if(BigInt(await provider.request({method:'eth_chainId'}))!==BigInt(crypto.chain_id))throw Error('Switch your wallet to the configured MegaETH network.');
-  return provider;
+  if(!nativeWalletSelected()){openNativeWallet();throw Error('Set up your built-in wallet, then try this transaction again.');}
+  if(!localWallet().unlocked&&!readOnly){openNativeWallet();throw Error('Unlock your built-in wallet, then try this transaction again.');}
 }
 async function connectWallet(){
   if(walletBusy||transactionBusy||rollBusy||busy)return;
-  if(localWallet()){openNativeWallet();return;}
-  return connectBrowserWallet();
-}
-async function connectBrowserWallet(){
-  if(walletBusy||transactionBusy||rollBusy||busy)return;
-  if(!browserWalletProvider()){await openWalletBrowser();return;}
-  walletBusy=true;renderWallet();
-  try{
-    const accounts=await browserWalletProvider().request({method:'eth_requestAccounts'});
-    if(!/^0x[a-fA-F0-9]{40}$/.test(accounts?.[0]||''))throw Error('No Ethereum wallet account was selected.');
-    if(walletSelectionLocked()&&accounts[0].toLowerCase()!==state.crypto?.wallet?.toLowerCase())throw Error('Settle or discard queued ratings before switching wallets.');
-    await api('wallet',{address:accounts[0]});walletAccount=accounts[0];
-    await refresh();await requireWallet();toast('Wallet connected. Review token transactions in your wallet.');
-  }catch(error){toast(error.message||'Wallet connection was cancelled.');}
-  finally{walletBusy=false;render();}
+  openNativeWallet();
 }
 function renderWallet(){
   if(!state)return;
@@ -305,9 +265,7 @@ function renderWallet(){
   $('reserved-balance').hidden=!queuedRatingCount();$('reserved-balance').textContent=`${fmtTokens(queuedTokenUnits())} ✨ queued · not paid`;
   $('balance').title=crypto?.wallet?`Wallet balance ${fmtTokens(crypto.balance_units)} ✨; available after queued ratings`:'';
   $('connect-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
-  $('open-wallet-browser').disabled=transactionBusy||rollBusy||busy;
-  $('connect-wallet').textContent=walletBusy?'Connecting…':localWallet()?nativeWalletSelected()?(localWallet().unlocked?'Wallet':'Unlock wallet'):'Wallet':walletAvailable()?`${walletAccount.slice(0,6)}…${walletAccount.slice(-4)}`:walletProvider()?'Connect wallet':'Open wallet browser ↗';
-  $('connect-browser-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
+  $('connect-wallet').textContent=nativeWalletSelected()&&!localWallet().unlocked?'Unlock wallet':'Wallet';
   $('crypto-network').textContent=crypto?`${crypto.chain_name} · ${crypto.chain_id}`:'MegaETH';
   $('crypto-wallet').textContent=crypto?.wallet||'Disconnected';
   $('crypto-contract').textContent=crypto?.contract||'Not configured';
@@ -315,7 +273,7 @@ function renderWallet(){
   $('register-seeder').disabled=!walletAvailable()||walletBusy||transactionBusy||rollBusy||busy||!!pendingTransaction;
   $('register-seeder').hidden=!!crypto?.seeder_registered;
   $('rating-credit-status').textContent=`Unused rating credit · ${fmtTokens(crypto?.rating_credit_units||'0')} ✨. You pay only the rating score. Credit funds future seeder rewards; any remaining shortfall is minted automatically.`;
-  $('wallet-status').textContent=walletPhase||crypto?.error||(!crypto?.configured?'The 좋아 token has not been deployed and configured for this app.':nativeWalletSelected()?(localWallet().unlocked?'Your built-in wallet is ready. Review each transaction before approving it.':'Your built-in wallet is locked. Unlock it to sign transactions.'):!crypto.wallet?'Set up your built-in wallet to receive tokens and approve transactions.':!walletAvailable()?'This is the last selected browser wallet. Connect it in your browser to sign.':'Your browser wallet signs each transaction. Roll settlement uses verified drand randomness.');
+  $('wallet-status').textContent=walletPhase||crypto?.error||(!crypto?.configured?'The 좋아 token has not been deployed and configured for this app.':nativeWalletSelected()?(localWallet().unlocked?'Your built-in wallet is ready. Review each transaction before approving it.':'Your built-in wallet is locked. Unlock it to sign transactions.'):'Set up your built-in wallet to receive tokens and approve transactions.');
   renderNativeWallet();
   $('stat-earned').textContent=crypto?.configured?`${fmtTokens(crypto.total_supply_units)} ✨`:'—';
   $('pending-transaction').hidden=!pendingTransaction;
@@ -323,17 +281,17 @@ function renderWallet(){
   $('retry-transaction').disabled=walletBusy||transactionBusy||rollBusy||busy;
   renderRatingSession();
 }
-async function waitForReceipt(hash,provider){
+async function waitForReceipt(hash){
   for(let attempt=0;attempt<120;attempt++){
-    const receipt=await provider.request({method:'eth_getTransactionReceipt',params:[hash]});
+    const receipt=await api('wallet/rpc',{method:'eth_getTransactionReceipt',params:[hash]});
     if(receipt){if(BigInt(receipt.status??'0x0')!==1n){const error=Error('The transaction reverted. Your wallet can show the reason.');error.code='TRANSACTION_REVERTED';throw error;}return receipt;}
     await new Promise(resolve=>setTimeout(resolve,1000));
   }
   throw Error('This transaction is still waiting for inclusion. Use Retry confirmation in Settings; do not submit it again.');
 }
-async function confirmTransaction(record,provider){
+async function confirmTransaction(record){
   walletPhase='Waiting for transaction inclusion…';renderWallet();
-  await waitForReceipt(record.hash,provider);
+  await waitForReceipt(record.hash);
   if(record.action==='request_roll'||record.action==='settle_roll'){
     const result=await api('roll',{transaction_hash:record.hash});refreshVersion++;
     state.roll=state.roll?.id===result.id&&state.roll.clip?{...result,clip:state.roll.clip}:result;
@@ -350,7 +308,8 @@ async function sendCryptoTransaction(action,fields={}){
   if(action==='rate_session'){sessionId=ratingSession()?.id;if(!/^[a-fA-F0-9]{64}$/.test(sessionId||''))throw Error('No saved rating session is available for checkout.');sessionReview={expected_session_id:sessionId,expected_rating_count:queuedRatingCount(),expected_total_units:queuedTokenUnits().toString()};}
   transactionBusy=true;renderWallet();
   try{
-    const provider=await requireWallet(),crypto={...state.crypto};
+    await requireWallet();
+    const crypto={...state.crypto};
     walletPhase='Preparing transaction…';renderWallet();
     const transaction=await api('crypto/transaction',{action,...(sessionReview||fields)});
     preparationOwned=action==='rate_session';
@@ -361,19 +320,16 @@ async function sendCryptoTransaction(action,fields={}){
     if(state.crypto.wallet?.toLowerCase()!==crypto.wallet.toLowerCase()||state.crypto.contract?.toLowerCase()!==crypto.contract.toLowerCase()||state.crypto.chain_id!==crypto.chain_id)throw Error('The selected wallet or network changed. Review the selection and try again.');
     walletPhase='Approve the transaction in your wallet…';renderWallet();
     signatureRequested=true;
-    let hash;
-    if(provider===nativeWalletProvider){
-      const approval_id=await reviewNativeTransaction(transaction,action,fields);
-      const result=await api('wallet/send',{approval_id});hash=result.hash;
-      if(result.broadcast_error)toast(`Transaction ${hash} is saved. Retry confirmation in Settings to resend the same signed transaction.`);
-    }else hash=await provider.request({method:'eth_sendTransaction',params:[transaction]});
+    const approval_id=await reviewNativeTransaction(transaction,action,fields);
+    const result=await api('wallet/send',{approval_id}),hash=result.hash;
+    if(result.broadcast_error)toast(`Transaction ${hash} is saved. Retry confirmation in Settings to resend the same signed transaction.`);
     if(!/^0x[a-fA-F0-9]{64}$/.test(hash||''))throw Error('The wallet did not return a valid transaction hash.');
     submittedHash=hash;
     const record={action,...fields,...(sessionId?{session_id:sessionId}:{}),hash,chain_id:crypto.chain_id,contract:crypto.contract,wallet:crypto.wallet};rememberTransaction(record);
     if(action==='rate_session'&&ratingSession()?.id===sessionId)state.crypto.rating_session.status='submitted';
     try{await api('crypto/pending',pendingServerRecord(record));state.crypto.pending_transaction=pendingServerRecord(record);}
-    catch{toast(`Transaction ${hash} is saved in this browser. The local backup failed; keep this browser open until confirmation.`);}
-    await confirmTransaction(record,provider);
+    catch{toast(`Transaction ${hash} is saved on this device. The profile backup failed; keep the app open until confirmation.`);}
+    await confirmTransaction(record);
   }catch(error){
     // A reverted transaction has no effects; a missing confirmation stays recoverable.
     if(error.code==='TRANSACTION_REVERTED')try{await resetRevertedTransaction(pendingTransaction);}catch{toast('The reverted transaction still needs server verification. Retry confirmation in Settings.');}
@@ -383,16 +339,15 @@ async function sendCryptoTransaction(action,fields={}){
     throw error;
   }finally{
     transactionBusy=false;walletPhase='';
-    await applyDeferredWallet();
     renderWallet();
   }
 }
 async function retryTransaction(){
   if(!pendingTransaction||walletBusy||transactionBusy||rollBusy||busy)return;
   walletBusy=true;transactionBusy=true;renderWallet();
-  try{const provider=await requireWallet({readOnly:true});if(provider===nativeWalletProvider)await api('wallet/rebroadcast',{});await confirmTransaction(pendingTransaction,provider);toast('Transaction confirmed.');}
+  try{await requireWallet({readOnly:true});await api('wallet/rebroadcast',{});await confirmTransaction(pendingTransaction);toast('Transaction confirmed.');}
   catch(error){if(error.code==='TRANSACTION_REVERTED')try{await resetRevertedTransaction(pendingTransaction);}catch{}toast(error.message);}
-  finally{walletPhase='';walletBusy=false;transactionBusy=false;await applyDeferredWallet();render();}
+  finally{walletPhase='';walletBusy=false;transactionBusy=false;render();}
 }
 async function recoverRoll(){
   if(rollBusy||busy||walletBusy||transactionBusy)return;
@@ -426,6 +381,7 @@ function queueNavigation(operation){
 function navigate(next){
   if(!['home','seed','rate','roll','settings'].includes(next))next='home';
   return queueNavigation(async()=>{
+    if(walletStartupRequired())return;
     if(next===page)return;
     const previous=page;
     page=next;
@@ -577,7 +533,6 @@ function renderRoll(){
     if(/^\d+$/.test(String(result.round)))proofLinks.push(`<a href="https://api.drand.sh/v2/chains/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/rounds/${result.round}" target="_blank" rel="noopener noreferrer">drand round ${result.round} ↗</a>`);
   }
   $('roll-proof').hidden=!proofLinks.length;$('roll-proof').innerHTML=proofLinks.join('');
-  $('proof-browser').hidden=!result||!!walletProvider();$('proof-browser').disabled=rollBusy||busy||transactionBusy;
   const player=$('roll-player');player.loop=false;
   const key=result?`${result.id}:${clip?.id||''}`:'';
   if(key!==rollMediaKey){
@@ -652,22 +607,18 @@ $('roll-form').addEventListener('submit',event=>{event.preventDefault();roll();}
 $('settle-roll').addEventListener('click',settleRoll);
 $('recover-roll').addEventListener('click',recoverRoll);
 $('connect-wallet').addEventListener('click',connectWallet);
-$('connect-browser-wallet').addEventListener('click',connectBrowserWallet);
 $('manage-wallet').addEventListener('click',openNativeWallet);
-$('close-wallet').addEventListener('click',()=>$('wallet-dialog').close());
-$('wallet-dialog').addEventListener('close',clearWalletSecrets);
+$('close-wallet').addEventListener('click',()=>{if(!walletStartupRequired()&&!walletFormBusy)$('wallet-dialog').close();});
+$('wallet-dialog').addEventListener('cancel',event=>{if(walletStartupRequired()||walletFormBusy)event.preventDefault();});
+$('wallet-dialog').addEventListener('close',()=>{clearWalletSecrets();if(walletStartupRequired())openNativeWallet();});
 $('wallet-mode').addEventListener('change',()=>{clearWalletSecrets();$('wallet-form-error').hidden=true;renderWalletDialog();});
 $('wallet-form').addEventListener('submit',submitNativeWallet);
-$('wallet-select-native').addEventListener('click',async()=>{if(walletFormBusy||transactionBusy||walletSelectionLocked())return;try{await api('wallet',{address:localWallet().address});await refresh();toast('Built-in wallet selected.');}catch(error){toast(error.message);}});
 for(const id of ['copy-wallet-address','wallet-dialog-copy'])$(id).addEventListener('click',()=>copy(localWallet()?.address));
-for(const id of ['lock-wallet','wallet-dialog-lock'])$(id).addEventListener('click',lockNativeWallet);
 for(const id of ['backup-wallet','wallet-dialog-backup'])$(id).addEventListener('click',backupNativeWallet);
 $('wallet-approval-form').addEventListener('submit',approveNativeTransaction);
 $('wallet-approval-cancel').addEventListener('click',()=>finishNativeApproval(false));
 $('wallet-approval-dialog').addEventListener('cancel',event=>{event.preventDefault();finishNativeApproval(false);});
 $('wallet-approval-dialog').addEventListener('close',()=>finishNativeApproval(false));
-$('open-wallet-browser').addEventListener('click',openWalletBrowser);
-$('proof-browser').addEventListener('click',openWalletBrowser);
 $('retry-transaction').addEventListener('click',retryTransaction);
 $('roll-wager').addEventListener('input',()=>{$('roll-error').hidden=true;renderRoll();});
 $('roll-odds').innerHTML=Array.from({length:10},(_,k)=>`<div><strong>${k}×</strong><span>${(2**(9-k)/1023*100).toFixed(k>5?3:2)}%</span></div>`).join('');
@@ -711,19 +662,4 @@ $('download-update').addEventListener('click',()=>openUpdate('download'));
 $('update-release').addEventListener('click',()=>openUpdate('release'));
 $('listen-addresses').addEventListener('click',event=>{const button=event.target.closest('[data-address]');if(button)copy(button.dataset.address);});
 window.addEventListener('pagehide',()=>{$('roll-player').pause();if(state?.session)fetch('/api/session',{method:'POST',headers:{'x-clipcrop-token':token,'Content-Type':'application/json'},body:'{"active":false}',keepalive:true}).catch(()=>{});});
-async function syncWalletAccount(){
-  if(nativeWalletSelected()){walletAccount=state.crypto.wallet;render();return;}
-  try{const accounts=await browserWalletProvider()?.request({method:'eth_accounts'});walletAccount=accounts?.[0]||null;render();}catch{walletAccount=null;}
-}
-if(browserWalletProvider()?.on){
-  browserWalletProvider().on('accountsChanged',async accounts=>{
-    if(nativeWalletSelected())return;
-    walletAccount=accounts?.[0]||null;
-    if(transactionBusy){deferredWalletAddress=walletAccount;renderWallet();return;}
-    if(walletSelectionLocked()&&walletAccount?.toLowerCase()!==state.crypto?.wallet?.toLowerCase()){render();toast('Settle or discard queued ratings and confirm pending transactions before switching wallets.');return;}
-    pendingTransaction=null;
-    try{await api('wallet',{address:walletAccount});await refresh();}catch(error){toast(error.message);}
-  });
-  browserWalletProvider().on('chainChanged',()=>{if(nativeWalletSelected())return;walletPhase='';refresh();});
-}
-(async()=>{await refresh();initialized=true;await syncWalletAccount();setInterval(refresh,1500);})();
+(async()=>{await refresh();initialized=true;setInterval(refresh,1500);})();
