@@ -40,6 +40,10 @@ if command -v node >/dev/null 2>&1; then
   node --test scripts/library.test.cjs scripts/roll.test.cjs scripts/session.test.cjs scripts/navigation.test.cjs scripts/update.test.cjs scripts/wallet.test.cjs
 fi
 
+if command -v python3 >/dev/null 2>&1; then
+  python3 scripts/discovery-diagnostics.test.py
+fi
+
 if [[ -d contracts/node_modules ]] && command -v npm >/dev/null 2>&1; then
   npm --prefix contracts run build
   npm --prefix contracts test

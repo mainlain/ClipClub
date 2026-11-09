@@ -106,4 +106,18 @@ CLIPCROP_FFPROBE=/usr/bin/ffprobe cargo run
 
 The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Peers connect automatically through mDNS on the local network and the public BitTorrent Mainline DHT across the internet; there is no peer-address entry. Allow local multicast for mDNS and outbound UDP for DHT discovery. The app attempts UPnP forwarding for both TCP ports on supported routers. Restrictive NAT, carrier-grade NAT, firewalls, or disabled UPnP can still require router configuration to make those ports reachable. There is no hosted relay or guaranteed NAT traversal.
 
+### Checking local discovery
+
+The portable application and Debian installation use the same networking code. Keep ClipClub open on both devices, check that Settings shows different peer IDs, and compare their versions. Local discovery uses IPv4 mDNS on UDP 5353, followed by a connection to the other device's peer TCP port. The BitTorrent TCP port is needed for video transfer. A device can receive a discovery announcement while a firewall still blocks the subsequent TCP connection.
+
+Run the diagnostic script on each Linux device, replacing the example address with the other device's Wi-Fi IPv4 address:
+
+```sh
+python3 scripts/diagnose-discovery.py --peer 192.168.1.20
+```
+
+The script reports local interfaces and listeners, probes mDNS for libp2p announcements, and tests the explicitly supplied peer's TCP ports. It uses Python's standard library, requires no root privileges, and makes no firewall or router changes. Use `--help` for custom ports. A successful multicast send alone does not establish that the other device received it, and an empty discovery result does not identify which device or network component blocked it. Compare both devices' results before changing firewall rules.
+
+Local discovery needs multicast delivery between the devices. Guest Wi-Fi, access-point client isolation, separate subnets, VPN routing, an exclusive mDNS listener, or firewall rules can prevent it even when both devices show the same Wi-Fi name. Avahi is not required: ClipClub implements its own mDNS discovery. Its [configuration](https://github.com/avahi/avahi/blob/master/man/avahi-daemon.conf.5.xml.in) can, however, reserve UDP 5353 exclusively and prevent another mDNS implementation from binding that port.
+
 Official platform references: [Wry's Linux requirements](https://github.com/tauri-apps/wry#linux-dependencies) and [GTK integration example](https://docs.rs/wry/0.57.1/wry/#examples).
