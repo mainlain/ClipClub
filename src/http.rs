@@ -1,7 +1,4 @@
-use crate::{
-    app::App,
-    core::{MAX_FILE_BYTES, Settings},
-};
+use crate::{app::App, core::MAX_FILE_BYTES};
 use axum::{
     Json, Router,
     body::Body,
@@ -95,7 +92,6 @@ pub async fn serve(
         .route("/api/rating-session/reset", post(rating_session_reset))
         .route("/api/roll", post(roll))
         .route("/api/session", post(session))
-        .route("/api/settings", post(settings))
         .route("/api/update/check", post(update_check))
         .route("/api/update/open", post(update_open))
         .route("/api/update/install", post(update_install))
@@ -438,10 +434,6 @@ struct Session {
 }
 async fn session(State(state): State<HttpState>, Json(input): Json<Session>) -> ApiResult {
     state.app.session(input.active).await?;
-    Ok(Json(json!({"ok":true})))
-}
-async fn settings(State(state): State<HttpState>, Json(input): Json<Settings>) -> ApiResult {
-    state.app.settings(input).await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn remove(State(state): State<HttpState>, Path(id): Path<String>) -> ApiResult {

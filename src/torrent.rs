@@ -216,7 +216,7 @@ impl TorrentEngine {
                 dht: None,
                 listen: listen_port.map(|port| ListenerOptions {
                     listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
-                    enable_upnp_port_forwarding: false,
+                    enable_upnp_port_forwarding: true,
                     ipv4_only: true,
                     ..Default::default()
                 }),

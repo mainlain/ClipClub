@@ -18,7 +18,7 @@ On Apple Silicon macOS, open `dist/clipclub.app`, or run the executable:
 
 On macOS, your profile is stored in `~/Library/Application Support/ClipCrop Points`. On Linux, every launch method uses `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points`; empty or relative `XDG_DATA_HOME` values use the default. Neither platform searches Downloads for a profile, and the app can be moved without moving this data. On other platforms, the executable defaults to an adjacent `clipcrop-points-data` directory; keep that directory when moving the app. Use `--data-dir PATH` to explicitly choose a different profile folder on any platform.
 
-The profile contains your private peer identity, legacy rating history, settings, watched history, uploaded files, cached videos, an encrypted wallet keystore when you create or import a wallet, and a public-wallet/roll journal. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
+The profile contains your private peer identity, legacy rating history, watched history, uploaded files, cached videos, an encrypted wallet keystore when you create or import a wallet, and a public-wallet/roll journal. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
 
 The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. It does not install a background service.
 
@@ -43,7 +43,7 @@ After wallet setup or startup unlock, the app opens in a compact, resizable wind
 - **Seed / upload:** select or drop MP4 or WebM videos. Files pass validation before they enter your library. New clips become torrents and begin seeding automatically. Uploading the exact same bytes joins the same deterministic torrent, even if the original filename differs. You can keep up to 100 permanent clips. Removing a clip stops its permanent seeding. Each clip shows its average rating out of 9 and rating count. Sort by recency or rating. Register your seeder wallet in Settings to receive rewards for your permanently seeded clips.
 - **Rate:** videos loop until you press a number from 0–9 or use a rating button. A positive number queues that many ✨ as your cost. The app calculates rewards for eligible permanent seeders locally, uses your unused rating credit, and automatically mints any remaining shortfall. Queue up to 100 ratings and 1,000 seeder payments, then settle them together with one wallet-approved transaction. Zero records the clip as watched without paying anyone. Positive ratings stay unpaid and private until the session batch settles. Positive ratings temporarily seed the watched clip for the rest of the rating session; leaving Rate ends those temporary seeds. You cannot rate your own permanently seeded clips or rate the same content twice.
 - **Roll:** commit ✨ for a verified multiplier from 0 through 9. After the future drand round is published, submit its proof to settle. A 0 burns the wager and plays no clip; a 1 returns the stake; 2–9 return the stake and mint the profit. Total payout is `wager × multiplier`. Positive results play one clip from that rating tier, without looping. Previously watched clips and clips in your own library are eligible.
-- **Settings:** inspect the token network, contract, wallet, and unconfirmed transactions; edit saved bootstrap peer addresses. Network details show the local peer identity and connection addresses.
+- **Settings:** inspect the token network, contract, wallet, and unconfirmed transactions. Network details show automatic discovery status, the local peer identity, and connection addresses. Peers connect automatically without entering addresses.
 
 Videos start with sound on. Use the video player's controls to adjust volume or mute.
 
@@ -123,7 +123,9 @@ The implementation follows [MegaETH’s developer skill](https://github.com/mega
 
 ### Network and trust limits
 
-Discovery uses libp2p mDNS on a local network and direct TCP bootstrap addresses for other networks. BitTorrent transfers use `librqbit`; catalog metadata and signed rating receipts use the authenticated libp2p mesh. Peers behind restrictive NAT may need reachable bootstrap peers and port forwarding. There is no hosted relay or promised automatic NAT traversal.
+Peers are discovered automatically through libp2p mDNS on the local network and the public BitTorrent Mainline DHT across the internet. A shared, versioned ClipClub discovery key advertises the peer mesh's TCP listening port; public DHT bootstrap nodes supply the initial routing contacts. Discovery runs while the app is open and requires no saved peer addresses. DHT results are untrusted connection candidates; Noise and signed GossipSub messages authenticate connected peers before the app accepts their metadata or ratings.
+
+BitTorrent transfers use `librqbit`; catalog metadata and signed rating receipts use the authenticated libp2p mesh. The app attempts UPnP port forwarding for the peer mesh and BitTorrent TCP listeners on supported routers. Internet discovery requires outbound DHT UDP access and a reachable peer mesh connection; video transfer also requires a reachable seeder's BitTorrent port. Restrictive NAT, carrier-grade NAT, firewalls, or disabled UPnP can still prevent inbound connections and may require router configuration. There is no hosted relay or guaranteed NAT traversal.
 
 MegaETH provides the token ledger and verified monetary outcomes. Peer discovery, content availability, and historical clip ratings remain local observations. Signed receipts identify a peer but do not prove actual seeding or a unique human, and disconnected peers may show different clip ratings. Sybil resistance for content rankings and moderation is not implemented. Legacy points receipts never become on-chain assets.
 
@@ -131,22 +133,18 @@ Duplicate detection is exact-byte detection. Re-encoding, editing, or changing e
 
 The embedded UI is served only on `127.0.0.1`, with a fresh per-process access token. The local HTTP service is an internal part of the desktop process. It is not a public application backend. Video uploads and the player communicate with that local service; video bytes move between users through BitTorrent.
 
-## Connect two peers
+## Automatic peer discovery
 
-On the same local network, open two instances with separate data directories and ports. mDNS discovery should connect them automatically:
+Open the app and it searches for peers automatically on the local network and across the internet. To verify local discovery, open two instances with separate data directories and ports:
 
 ```sh
 ./dist/clipclub --data-dir /tmp/clipclub-alice --p2p-port 42931 --torrent-port 42932
 ./dist/clipclub --data-dir /tmp/clipclub-bob --p2p-port 42933 --torrent-port 42934
 ```
 
-The commands run in separate terminals. For peers on different networks, save the other peer's full reachable multiaddress in Settings, for example:
+The commands run in separate terminals. No address entry or settings change is needed. Allow local multicast for mDNS discovery and outbound UDP for internet DHT discovery. Internet peers also need reachable TCP ports as described above.
 
-```text
-/ip4/192.168.1.20/tcp/42931/p2p/<other-peer-id>
-```
-
-Use a reachable public address when crossing networks. The default peer mesh port is TCP **42931**; the default torrent listening port is TCP **42932**. The HTTP interface binds an ephemeral loopback port by default. CLI options are `--data-dir PATH`, `--p2p-port PORT`, `--torrent-port PORT`, `--http-port PORT`, and `--headless`. A data directory is locked to prevent concurrent processes from modifying the same profile.
+The default peer mesh port is TCP **42931**; the default torrent listening port is TCP **42932**. The HTTP interface binds an ephemeral loopback port by default. CLI options are `--data-dir PATH`, `--p2p-port PORT`, `--torrent-port PORT`, `--http-port PORT`, and `--headless`. A data directory is locked to prevent concurrent processes from modifying the same profile.
 
 ## Build
 
@@ -180,7 +178,7 @@ Run the checks with:
 ./scripts/check.sh
 ```
 
-This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating and roll math, signatures and persistence, roll playback behavior, menu navigation, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
+This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating and roll math, signatures and persistence, roll playback behavior, menu navigation, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. Automatic DHT discovery and reconnection use a local Mainline DHT fixture without public infrastructure. The mDNS network test requires a multicast-capable LAN and runs separately with `cargo test --no-default-features mdns_discovers_real_peers -- --ignored`. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
 
 ## Source layout
 
@@ -194,6 +192,7 @@ This runs formatting when `rustfmt` is installed, all backend targets/tests, a d
 | `src/media.rs` | Bounded media validation and portable validator installation |
 | `src/torrent.rs` | Deterministic torrent creation and BitTorrent sessions |
 | `src/peer.rs` | Identity, discovery, authenticated gossip and presence |
+| `src/discovery.rs` | Bounded discovery candidates, address validation and connection retries |
 | `ui/` | Embedded minimalist interface and native WebView video element |
 
 clipclub's original source is MIT licensed. Third-party components retain their own licenses.

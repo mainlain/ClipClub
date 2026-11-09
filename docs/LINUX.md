@@ -29,7 +29,7 @@ cd clipclub-0.1.0-linux-x86_64
 ./clipclub
 ```
 
-Your identity, settings, points history, videos, and extracted validator live in the user data folder described above. Opening the app does not search for or create an adjacent profile in Downloads, and moving the executable preserves the same profile. Never share your profile's `identity.key`.
+Your identity, points history, videos, and extracted validator live in the user data folder described above. Opening the app does not search for or create an adjacent profile in Downloads, and moving the executable preserves the same profile. Never share your profile's `identity.key`.
 
 The packaged wrapper uses the same profile location:
 
@@ -104,6 +104,6 @@ For a development build using an installed validator:
 CLIPCROP_FFPROBE=/usr/bin/ffprobe cargo run
 ```
 
-The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Local-network discovery uses mDNS. For peers on other networks, enter a reachable peer address in Settings and arrange any necessary port forwarding. There is no hosted discovery or relay service.
+The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Peers connect automatically through mDNS on the local network and the public BitTorrent Mainline DHT across the internet; there is no peer-address entry. Allow local multicast for mDNS and outbound UDP for DHT discovery. The app attempts UPnP forwarding for both TCP ports on supported routers. Restrictive NAT, carrier-grade NAT, firewalls, or disabled UPnP can still require router configuration to make those ports reachable. There is no hosted relay or guaranteed NAT traversal.
 
 Official platform references: [Wry's Linux requirements](https://github.com/tauri-apps/wry#linux-dependencies) and [GTK integration example](https://docs.rs/wry/0.57.1/wry/#examples).

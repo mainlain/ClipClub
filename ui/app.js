@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="api-token"]').content;
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let lastNotice=null;
-let state=null, page='home', current=null, busy=false, uploading=false, settingsDirty=false, initialized=false, toastTimer;
+let state=null, page='home', current=null, busy=false, uploading=false, initialized=false, toastTimer;
 let rollBusy=false, rollMediaKey='', rollStartedKey='';
 let updateStatus=null, updateBusy=false, updateOpening=false, updateNoticeVersion=null, updateTask=null;
 let refreshVersion=0;
@@ -401,22 +401,17 @@ function navigate(next){
     if(page==='rate'){
       try{await api('session',{active:true});}catch(error){toast(error.message);}
     }
-    if(page==='settings')fillSettings(true);
     await refresh();
   });
-}
-function fillSettings(force=false){
-  if(!state||(!force&&settingsDirty))return;
-  $('bootstrap-peers').value=state.settings.bootstrap_peers.join('\n');
-  document.querySelectorAll('#settings-form input, #settings-form textarea, #settings-form button').forEach(control=>control.disabled=false);
-  if(force)settingsDirty=false;
 }
 function render(){
   if(!state)return;
   if(state.notice&&state.notice!==lastNotice){lastNotice=state.notice;toast(state.notice);}
   renderWallet();
   $('seed-count').textContent=state.library.length;$('ready-count').textContent=state.queue.length;$('queue-total').textContent=state.queue.length;
-  $('peer-status').textContent=state.peers.length?`${state.peers.length} peer${state.peers.length===1?'':'s'} connected`:'Finding peers…';
+  const peerStatus=state.peers.length?`${state.peers.length} peer${state.peers.length===1?'':'s'} connected`:'Finding peers…';
+  $('peer-status').textContent=peerStatus;
+  $('discovery-status').textContent=peerStatus;
   $('library-cap').textContent=`${state.library.length} / 100 clips`;
   $('stat-seeds').innerHTML=`${state.library.filter(item=>item.seeding).length} <small>clips</small>`;
   $('stat-storage').innerHTML=`${(state.library.reduce((sum,item)=>sum+item.clip.size,0)/1e6).toFixed(1)} <small>MB</small>`;
@@ -442,15 +437,13 @@ function render(){
   $('clip-meta').textContent=current?`${current.extension.toUpperCase()} · ${duration(current.duration_secs)} · ${current.width} × ${current.height}`:'';
   if(playing && $('player').paused&&!$('player').error)$('player').play().catch(()=>{});
   $('waiting-title').textContent=state.session?'Waiting for clips':'Session paused';
-  $('waiting-message').textContent=!state.session?'Start a session to watch and rate.':state.peers.length?'Waiting for a clip from your peers.':'Connect a peer to get started.';
-  $('connect-peer').hidden=!state.session||state.peers.length>0;
+  $('waiting-message').textContent=!state.session?'Start a session to watch and rate.':state.peers.length?'Waiting for a clip from your peers.':'Finding peers automatically…';
   const preview=current?.distribution_preview;
   $('rating-recipient').textContent=!current?'':preview?preview.seeders?`${preview.seeders} eligible permanent seeder${preview.seeders===1?'':'s'} · rewards calculated locally.${!seederPaymentsFit()?' Settle the current session before adding more seeder payments.':''}`:'No registered permanent seeders are available for payment. You can skip for free.':clipCanReceiveRating(current)?`Recipient · ${current.beneficiary}`:'This clip needs a registered wallet before it can receive ✨. You can skip for free.';
   document.querySelectorAll('[data-score]').forEach(button=>{const score=Number(button.dataset.score);button.title=score>0&&preview?`${score} ✨ from your wallet; ${fmtTokens(preview.reward_units[score],0)} ✨ to each of ${preview.seeders} permanent seeders`:'';button.disabled=busy||rollBusy||walletBusy||transactionBusy||!playing||(score>0&&(!ratingWalletSelected()||!ratingDraftEditable()||queuedRatingCount()>=100||!clipCanReceiveRating(current)||!seederPaymentsFit()||BigInt(score)*TOKEN_SCALE>spendableTokenBalance()||!!pendingTransaction));});
   $('peer-id').textContent=state.profile_id;$('data-folder').textContent=state.data_folder;
   $('network-ports').textContent=`Peer TCP ${state.p2p_port} · BitTorrent TCP ${state.torrent_port}`;
   $('listen-addresses').innerHTML=state.addresses.length?state.addresses.map(address=>`<button type="button" data-address="${esc(address)}" title="Copy peer address">${esc(address)}</button>`).join(''):'Finding addresses…';
-  fillSettings();
   renderRoll();
   renderUpdates(state.update);
 }
@@ -565,7 +558,7 @@ async function settleRoll(){
   finally{walletPhase='';rollBusy=false;render();}
 }
 
-async function refresh(){const version=++refreshVersion;try{const next=await api('state',undefined,'GET');if(version!==refreshVersion)return;state=next;render();}catch(error){if(initialized&&version===refreshVersion)$('peer-status').textContent='Client disconnected';}}
+async function refresh(){const version=++refreshVersion;try{const next=await api('state',undefined,'GET');if(version!==refreshVersion)return;state=next;render();}catch(error){if(initialized&&version===refreshVersion){$('peer-status').textContent='Client disconnected';$('discovery-status').textContent='Client disconnected';}}}
 async function rate(score){
   if(busy||rollBusy||walletBusy||transactionBusy||page!=='rate'||!current||!state?.session)return;
   const clipId=current.id;
@@ -649,9 +642,6 @@ $('library').addEventListener('click',async event=>{
 $('close-preview').addEventListener('click',()=>$('preview-dialog').close());
 $('preview-dialog').addEventListener('close',()=>{$('preview-video').pause();$('preview-video').removeAttribute('src');$('preview-video').load();});
 $('player').addEventListener('error',()=>{if(current)toast('Your system could not play this codec. Press 0 to pass without spending tokens.');});
-document.querySelectorAll('#settings-form input, #settings-form textarea, #settings-form button').forEach(control=>control.disabled=true);
-$('settings-form').addEventListener('input',()=>settingsDirty=true);
-$('settings-form').addEventListener('submit',async event=>{event.preventDefault();if(!state){toast('Settings are still loading. Try again in a moment.');return;}try{await api('settings',{bootstrap_peers:$('bootstrap-peers').value.split('\n').map(s=>s.trim()).filter(Boolean)});settingsDirty=false;$('save-status').textContent='Saved';await refresh();}catch(error){toast(error.message);}});
 $('copy-id').addEventListener('click',()=>copy(state.profile_id));
 $('check-updates').addEventListener('click',checkUpdates);
 $('install-update').addEventListener('click',installUpdate);

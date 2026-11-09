@@ -4,17 +4,22 @@
 //! A message's author comes from authenticated GossipSub, never its JSON body.
 //! Presence is an observation, not proof of storage or a global user census.
 
-use crate::core::{Clip, RatingReceipt};
+use crate::{
+    core::{Clip, RatingReceipt},
+    discovery::Discovery,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, connection_limits, gossipsub, identity, mdns,
+    PeerId, Swarm, SwarmBuilder, connection_limits, gossipsub, identity, mdns,
     multiaddr::Protocol,
     noise,
-    swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    swarm::{NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
+    tcp, upnp, yamux,
 };
+use librqbit::dht::{DhtBuilder, DhtConfig, Id20, RequestPeersStream};
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
@@ -24,12 +29,14 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 const TOPIC: &str = "clipcrop/catalog/2";
 const MAX_WIRE: usize = 128 * 1024;
 const MAX_SEEDED: usize = 100;
 const MAX_AUTHORS: usize = 2048;
 const REFRESH: Duration = Duration::from_secs(20);
+const DISCOVERY_TICK: Duration = Duration::from_secs(5);
 
 /// Identity lives beside portable state; moving the folder preserves it.
 /// Never silently replace an unreadable/corrupt identity with a new wallet.
@@ -132,12 +139,6 @@ impl PeerHandle {
         self.send(Command::Advert(clip)).await
     }
 
-    pub async fn dial(&self, address: String) -> Result<()> {
-        // Validate synchronously so the UI receives actionable input errors.
-        validate_address(&address)?;
-        self.send(Command::Dial(address)).await
-    }
-
     pub async fn shutdown(&self) -> Result<()> {
         self.send(Command::Shutdown).await
     }
@@ -163,7 +164,6 @@ enum Command {
     Announce(Snapshot),
     Advert(Clip),
     Receipt(RatingReceipt),
-    Dial(String),
     Shutdown,
 }
 
@@ -189,7 +189,8 @@ enum WireMessage {
 #[derive(NetworkBehaviour)]
 struct Behaviour {
     gossip: gossipsub::Behaviour,
-    mdns: mdns::tokio::Behaviour,
+    mdns: Toggle<mdns::tokio::Behaviour>,
+    upnp: Toggle<upnp::tokio::Behaviour>,
     limits: connection_limits::Behaviour,
 }
 
@@ -198,7 +199,69 @@ struct Behaviour {
 pub async fn start(
     identity: identity::Keypair,
     port: u16,
-    bootstrap: Vec<String>,
+) -> Result<(PeerHandle, mpsc::Receiver<PeerEvent>)> {
+    start_with_options(identity, port, DiscoveryOptions::default()).await
+}
+
+struct DiscoveryOptions {
+    local: bool,
+    port_mapping: bool,
+    bootstrap: Option<Vec<String>>,
+    #[cfg(test)]
+    allow_local_dht: bool,
+}
+
+impl Default for DiscoveryOptions {
+    fn default() -> Self {
+        Self {
+            local: true,
+            port_mapping: true,
+            bootstrap: None,
+            #[cfg(test)]
+            allow_local_dht: false,
+        }
+    }
+}
+
+/// This rendezvous key identifies the application protocol, not a video. DHT
+/// results are only connection candidates; Noise and GossipSub authenticate them.
+fn discovery_key() -> Id20 {
+    Id20::new(Sha1::digest(format!("clipclub/peer-discovery/{TOPIC}")).into())
+}
+
+struct InternetDiscovery {
+    peers: RequestPeersStream,
+    cancel: CancellationToken,
+}
+
+impl InternetDiscovery {
+    async fn new(port: u16, bootstrap: Option<Vec<String>>) -> Result<Self> {
+        let cancel = CancellationToken::new();
+        let dht = DhtBuilder::with_config(DhtConfig {
+            listen_addr: Some("0.0.0.0:0".parse()?),
+            bootstrap_addrs: bootstrap,
+            cancellation_token: Some(cancel.clone()),
+            ..Default::default()
+        })
+        .await?;
+        // The library keeps looking up and renewing this announcement, even
+        // with an empty catalog. No global torrent configuration is persisted.
+        let peers = dht.get_peers(discovery_key(), Some(port));
+        Ok(Self { peers, cancel })
+    }
+}
+
+impl Drop for InternetDiscovery {
+    fn drop(&mut self) {
+        // DHT workers own an Arc: dropping the stream alone is insufficient.
+        self.cancel.cancel();
+    }
+}
+
+async fn start_with_options(
+    identity: identity::Keypair,
+    port: u16,
+    options: DiscoveryOptions,
 ) -> Result<(PeerHandle, mpsc::Receiver<PeerEvent>)> {
     let id = identity.public().to_peer_id();
     let mut swarm = SwarmBuilder::with_existing_identity(identity)
@@ -222,8 +285,21 @@ pub async fn start(
                 config,
             )
             .map_err(std::io::Error::other)?;
-            let mdns =
-                mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
+            let mdns = if options.local {
+                // A machine without multicast support can still discover peers
+                // over the internet. A short TTL also tracks interface changes.
+                let mdns = mdns::tokio::Behaviour::new(
+                    mdns::Config {
+                        ttl: Duration::from_secs(60),
+                        query_interval: Duration::from_secs(15),
+                        ..Default::default()
+                    },
+                    key.public().to_peer_id(),
+                );
+                mdns.ok()
+            } else {
+                None
+            };
             let limits = connection_limits::Behaviour::new(
                 connection_limits::ConnectionLimits::default()
                     .with_max_pending_incoming(Some(32))
@@ -235,7 +311,11 @@ pub async fn start(
             );
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Behaviour {
                 gossip,
-                mdns,
+                mdns: mdns.into(),
+                upnp: options
+                    .port_mapping
+                    .then(upnp::tokio::Behaviour::default)
+                    .into(),
                 limits,
             })
         })?
@@ -246,21 +326,7 @@ pub async fn start(
     swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{port}").parse()?)?;
     let (command_tx, command_rx) = mpsc::channel(512);
     let (event_tx, event_rx) = mpsc::channel(1024);
-    let mut retry_addresses = Vec::new();
-    for address in bootstrap.iter().take(64) {
-        if let Ok(address) = validate_address(address) {
-            retry_addresses.push(address);
-        }
-        match validate_address(address).and_then(|addr| swarm.dial(addr).map_err(Into::into)) {
-            Ok(()) => {}
-            Err(error) => {
-                let _ = event_tx.try_send(PeerEvent::Error(format!(
-                    "Cannot connect to {address}: {error}"
-                )));
-            }
-        }
-    }
-    tokio::spawn(run(swarm, topic, command_rx, event_tx, retry_addresses));
+    tokio::spawn(run(swarm, topic, command_rx, event_tx, options));
     Ok((
         PeerHandle {
             peer_id: id.to_string(),
@@ -268,30 +334,6 @@ pub async fn start(
         },
         event_rx,
     ))
-}
-
-fn validate_address(address: &str) -> Result<Multiaddr> {
-    if address.len() > 512 {
-        bail!("Peer address is too long");
-    }
-    let addr: Multiaddr = address
-        .parse()
-        .context("Use a peer multiaddress, for example /ip4/192.168.1.5/tcp/42831/p2p/12D3…")?;
-    if !addr
-        .iter()
-        .any(|part| matches!(part, Protocol::Tcp(port) if port != 0))
-    {
-        bail!("A peer address must include a TCP port");
-    }
-    if addr.iter().any(|part| {
-        matches!(
-            part,
-            Protocol::Http | Protocol::Https | Protocol::Ws(_) | Protocol::Wss(_)
-        )
-    }) {
-        bail!("Only direct TCP peer addresses are supported");
-    }
-    Ok(addr)
 }
 
 fn valid_id(id: &str) -> bool {
@@ -407,7 +449,7 @@ async fn run(
     topic: gossipsub::IdentTopic,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<PeerEvent>,
-    mut retry_addresses: Vec<Multiaddr>,
+    options: DiscoveryOptions,
 ) {
     let mut snapshot = Snapshot::default();
     let mut timer = tokio::time::interval(REFRESH);
@@ -415,6 +457,11 @@ async fn run(
     let mut peer_ips = HashMap::<PeerId, IpAddr>::new();
     let mut budgets = HashMap::<PeerId, AuthorBudget>::new();
     let mut subscribed = HashSet::<PeerId>::new();
+    let mut discovery = Discovery::new(*swarm.local_peer_id());
+    let mut discovery_timer = tokio::time::interval(DISCOVERY_TICK);
+    discovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut internet: Option<InternetDiscovery> = None;
+    let mut listen_port = None;
     loop {
         tokio::select! {
             command = commands.recv() => match command {
@@ -428,29 +475,62 @@ async fn run(
                 }
                 Some(Command::Advert(clip)) => publish(&mut swarm, &topic, &WireMessage::Advert { clip }),
                 Some(Command::Receipt(receipt)) => publish(&mut swarm, &topic, &WireMessage::Receipt { receipt }),
-                Some(Command::Dial(address)) => {
-                    if let Ok(address) = validate_address(&address)
-                        && retry_addresses.len() < 64 && !retry_addresses.contains(&address) {
-                            retry_addresses.push(address);
-                        }
-                    if let Err(error) = validate_address(&address).and_then(|addr| swarm.dial(addr).map_err(Into::into)) {
-                        let _ = events.try_send(PeerEvent::Error(format!("Peer connection failed: {error}")));
-                    }
-                }
             },
             _ = timer.tick() => {
                 broadcast(&mut swarm, &topic, &snapshot);
                 budgets.retain(|_, budget| budget.started.elapsed() < Duration::from_secs(120));
-                for address in &retry_addresses {
-                    let connected = address.iter().find_map(|part| match part {
-                        Protocol::P2p(peer) => Some(swarm.is_connected(&peer)),
-                        _ => None,
-                    }).unwrap_or(false);
-                    if !connected { let _ = swarm.dial(address.clone()); }
+                if internet.is_none() && let Some(port) = listen_port {
+                    match InternetDiscovery::new(port, options.bootstrap.clone()).await {
+                        Ok(found) => internet = Some(found),
+                        Err(error) => {
+                            let _ = events.try_send(PeerEvent::Error(format!("Internet peer discovery will retry: {error}")));
+                        }
+                    }
+                }
+            },
+            _ = discovery_timer.tick() => {
+                if let Some(mdns) = swarm.behaviour().mdns.as_ref() {
+                    discovery.refresh_local(mdns.discovered_nodes().copied());
+                }
+                for address in discovery.due() {
+                    let _ = swarm.dial(address);
+                }
+            },
+            endpoint = async {
+                match internet.as_mut() {
+                    Some(internet) => internet.peers.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(endpoint) = endpoint {
+                    #[cfg(test)]
+                    if options.allow_local_dht {
+                        discovery.remember(socket_multiaddr(endpoint), None);
+                    } else {
+                        discovery.remember_internet(endpoint);
+                    }
+                    #[cfg(not(test))]
+                    discovery.remember_internet(endpoint);
+                } else {
+                    internet = None;
                 }
             },
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
+                    if listen_port.is_none() {
+                        listen_port = address.iter().find_map(|part| match part {
+                            Protocol::Tcp(port) if port != 0 => Some(port),
+                            _ => None,
+                        });
+                        if let Some(port) = listen_port {
+                            match InternetDiscovery::new(port, options.bootstrap.clone()).await {
+                                Ok(found) => internet = Some(found),
+                                Err(error) => {
+                                    let _ = events.try_send(PeerEvent::Error(format!("Internet peer discovery will retry: {error}")));
+                                }
+                            }
+                        }
+                    }
                     let _ = events.try_send(PeerEvent::Listening(format!("{address}/p2p/{}", swarm.local_peer_id())));
                 },
                 SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
@@ -458,6 +538,7 @@ async fn run(
                         let _ = swarm.disconnect_peer_id(peer_id);
                         continue;
                     }
+                    discovery.connected(peer_id, endpoint.get_remote_address());
                     if let Some(ip) = endpoint.get_remote_address().iter().find_map(|part| match part {
                         Protocol::Ip4(ip) => Some(IpAddr::V4(ip)),
                         Protocol::Ip6(ip) => Some(IpAddr::V6(ip)),
@@ -466,21 +547,23 @@ async fn run(
                     swarm.behaviour_mut().gossip.add_explicit_peer(&peer_id);
                 },
                 SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } => {
+                    discovery.disconnected(peer_id);
                     peer_ips.remove(&peer_id);
                     subscribed.remove(&peer_id);
+                    swarm.behaviour_mut().gossip.remove_explicit_peer(&peer_id);
                     let _ = events.try_send(PeerEvent::Disconnected(peer_id.to_string()));
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     for (peer_id, address) in list.into_iter().take(128) {
-                        if peer_id != *swarm.local_peer_id() && !swarm.is_connected(&peer_id) {
-                            swarm.behaviour_mut().gossip.add_explicit_peer(&peer_id);
-                            let _ = swarm.dial(address.with(Protocol::P2p(peer_id)));
+                        discovery.remember(address.clone(), Some(peer_id));
+                        if swarm.is_connected(&peer_id) {
+                            discovery.connected(peer_id, &address);
                         }
                     }
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                    for (peer_id, _) in list {
-                        swarm.behaviour_mut().gossip.remove_explicit_peer(&peer_id);
+                    for (peer_id, address) in list {
+                        discovery.forget(&address, peer_id);
                     }
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Subscribed { peer_id, topic: remote_topic })) => {
@@ -518,14 +601,24 @@ async fn run(
                         WireMessage::Receipt { receipt } => { let _ = events.try_send(PeerEvent::Receipt(receipt)); },
                     }
                 },
-                SwarmEvent::OutgoingConnectionError { error, .. } => {
-                    let _ = events.try_send(PeerEvent::Error(format!("Peer unavailable: {error}")));
-                },
+                // Stale/unreachable discovery results are normal. Candidate
+                // retries are bounded and do not overwrite application notices.
                 _ => {},
             }
         }
     }
     // Dropping the swarm closes every socket immediately.
+}
+
+#[cfg(test)]
+fn socket_multiaddr(endpoint: SocketAddr) -> libp2p::Multiaddr {
+    let ip = match endpoint.ip() {
+        IpAddr::V4(ip) => Protocol::Ip4(ip),
+        IpAddr::V6(ip) => Protocol::Ip6(ip),
+    };
+    libp2p::Multiaddr::empty()
+        .with(ip)
+        .with(Protocol::Tcp(endpoint.port()))
 }
 
 #[cfg(test)]
@@ -574,13 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn peer_addresses_require_real_tcp_port() {
-        assert!(validate_address("/ip4/127.0.0.1/tcp/42831").is_ok());
-        assert!(validate_address("/ip4/127.0.0.1/tcp/0").is_err());
-        assert!(validate_address("https://example.com").is_err());
-    }
-
-    #[test]
     fn portable_identity_is_reused_and_corruption_is_not_reset() {
         let root = std::env::temp_dir().join(format!("clipcrop-peer-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -592,47 +678,168 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[tokio::test]
-    async fn two_real_peers_exchange_authenticated_presence() {
-        let (alice, mut alice_events) = start(identity::Keypair::generate_ed25519(), 0, vec![])
-            .await
-            .unwrap();
-        let address = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(PeerEvent::Listening(address)) = alice_events.recv().await {
-                    break address.replace("/ip4/0.0.0.0/", "/ip4/127.0.0.1/");
+    async fn presence_from(
+        events: &mut mpsc::Receiver<PeerEvent>,
+        expected: &str,
+        port: u16,
+    ) -> SocketAddr {
+        tokio::time::timeout(Duration::from_secs(40), async {
+            while let Some(event) = events.recv().await {
+                if let PeerEvent::Presence {
+                    peer,
+                    torrent_addr: Some(address),
+                    ..
+                } = event
+                    && peer == expected
+                    && address.port() == port
+                {
+                    return address;
                 }
             }
+            panic!("mesh stopped before presence");
         })
         .await
-        .unwrap();
+        .expect("automatic discovery timed out")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a multicast-capable LAN; run with --ignored"]
+    async fn mdns_discovers_real_peers_without_manual_addresses() {
+        let options = || DiscoveryOptions {
+            port_mapping: false,
+            bootstrap: Some(vec!["127.0.0.1:9".into()]),
+            ..Default::default()
+        };
+        let (alice, mut alice_events) =
+            start_with_options(identity::Keypair::generate_ed25519(), 0, options())
+                .await
+                .unwrap();
+        let (bob, mut bob_events) =
+            start_with_options(identity::Keypair::generate_ed25519(), 0, options())
+                .await
+                .unwrap();
         alice
             .announce(vec![], vec![], 14001, vec![], None)
-            .await
-            .unwrap();
-        let (bob, mut bob_events) = start(identity::Keypair::generate_ed25519(), 0, vec![])
             .await
             .unwrap();
         bob.announce(vec![], vec![], 14002, vec![], None)
             .await
             .unwrap();
-        bob.dial(address).await.unwrap();
-        let presence = tokio::time::timeout(Duration::from_secs(8), async {
-            loop {
-                if let Some(PeerEvent::Presence {
-                    peer, torrent_addr, ..
-                }) = bob_events.recv().await
-                {
-                    if peer == alice.peer_id {
-                        break torrent_addr;
-                    }
-                }
-            }
+        let (alice_endpoint, bob_endpoint) = tokio::join!(
+            presence_from(&mut bob_events, &alice.peer_id, 14001),
+            presence_from(&mut alice_events, &bob.peer_id, 14002),
+        );
+        assert_eq!(alice_endpoint.port(), 14001);
+        assert_eq!(bob_endpoint.port(), 14002);
+        alice.shutdown().await.unwrap();
+        bob.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dht_discovers_real_peers_without_mdns_or_manual_addresses() {
+        // Local Mainline node: exercise actual get_peers/announce_peer packets
+        // without contacting public infrastructure. Its ID is close enough to
+        // the rendezvous key to store that key under the library's distance cap.
+        let seed = DhtBuilder::with_config(DhtConfig {
+            peer_id: Some(discovery_key()),
+            listen_addr: Some("127.0.0.1:0".parse().unwrap()),
+            bootstrap_addrs: Some(vec!["127.0.0.1:9".into()]),
+            ..Default::default()
         })
         .await
         .unwrap();
-        assert_eq!(presence, Some("127.0.0.1:14001".parse().unwrap()));
+        let _seed_guard = seed.cancellation_token().clone().drop_guard();
+        // Bootstrap replies must include a routing contact, as on the public
+        // network. An isolated empty routing table cannot bootstrap another node.
+        let mut table = seed.with_routing_tables(|table, _| table.clone());
+        table.add_node(discovery_key(), seed.listen_addr());
+        let router = DhtBuilder::with_config(DhtConfig {
+            peer_id: Some(discovery_key()),
+            listen_addr: Some("127.0.0.1:0".parse().unwrap()),
+            bootstrap_addrs: Some(vec![seed.listen_addr().to_string()]),
+            routing_table: Some(table),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let _router_guard = router.cancellation_token().clone().drop_guard();
+        let options = || DiscoveryOptions {
+            local: false,
+            port_mapping: false,
+            bootstrap: Some(vec![router.listen_addr().to_string()]),
+            allow_local_dht: true,
+        };
+        let alice_identity = identity::Keypair::generate_ed25519();
+        let (alice, mut alice_events) = start_with_options(alice_identity.clone(), 0, options())
+            .await
+            .unwrap();
+        let alice_port = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = alice_events.recv().await {
+                if let PeerEvent::Listening(address) = event {
+                    let address: libp2p::Multiaddr = address.parse().unwrap();
+                    if let Some(port) = address.iter().find_map(|part| match part {
+                        Protocol::Tcp(port) => Some(port),
+                        _ => None,
+                    }) {
+                        return port;
+                    }
+                }
+            }
+            panic!("mesh stopped before listening");
+        })
+        .await
+        .unwrap();
+        let (bob, mut bob_events) =
+            start_with_options(identity::Keypair::generate_ed25519(), 0, options())
+                .await
+                .unwrap();
+        alice
+            .announce(vec![], vec![], 14001, vec![], None)
+            .await
+            .unwrap();
+        bob.announce(vec![], vec![], 14002, vec![], None)
+            .await
+            .unwrap();
+        let (alice_endpoint, bob_endpoint) = tokio::join!(
+            presence_from(&mut bob_events, &alice.peer_id, 14001),
+            presence_from(&mut alice_events, &bob.peer_id, 14002),
+        );
+        assert_eq!(alice_endpoint, "127.0.0.1:14001".parse().unwrap());
+        assert_eq!(bob_endpoint, "127.0.0.1:14002".parse().unwrap());
         alice.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while alice_events.recv().await.is_some() {}
+            while let Some(event) = bob_events.recv().await {
+                if matches!(event, PeerEvent::Disconnected(peer) if peer == alice.peer_id) {
+                    return;
+                }
+            }
+            panic!("remaining mesh stopped before disconnect");
+        })
+        .await
+        .unwrap();
+        let (restarted, _restarted_events) =
+            start_with_options(alice_identity, alice_port, options())
+                .await
+                .unwrap();
+        assert_eq!(restarted.peer_id, alice.peer_id);
+        restarted
+            .announce(vec![], vec![], 14003, vec![], None)
+            .await
+            .unwrap();
+        let endpoint = presence_from(&mut bob_events, &restarted.peer_id, 14003).await;
+        assert_eq!(endpoint, "127.0.0.1:14003".parse().unwrap());
+        restarted.shutdown().await.unwrap();
         bob.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn internet_discovery_cancels_workers_on_drop() {
+        let discovery = InternetDiscovery::new(14001, Some(vec!["127.0.0.1:9".into()]))
+            .await
+            .unwrap();
+        let cancel = discovery.cancel.clone();
+        drop(discovery);
+        assert!(cancel.is_cancelled());
     }
 }

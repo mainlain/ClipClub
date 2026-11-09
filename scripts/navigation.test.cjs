@@ -14,7 +14,7 @@ const context=vm.createContext({document:{body:{dataset:{page:'home'}},getElemen
 vm.runInContext(fs.readFileSync('ui/app.js','utf8'),context);
 assert.equal(vm.runInContext('page',context),'home');
 assert.deepEqual(calls,['/api/state'],'startup must only load state, without opening a rating session');
-const fixture={balance:100,settings:{bootstrap_peers:[]},library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a',earned:0};
+const fixture={balance:100,library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a',earned:0};
 context.fixture=fixture;
 vm.runInContext('state=fixture;initialized=true;',context);
 const sessions=[];

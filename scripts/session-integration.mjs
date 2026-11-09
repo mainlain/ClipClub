@@ -201,10 +201,10 @@ async function run() {
     assert.equal((await client.state()).crypto.seeder_registered,true);
   }
   assert.equal(await token.ratingCredit(raterAddress),0n);
-  const settings = (await bob.state()).settings;
-  settings.bootstrap_peers = [alice,charlie].map(client=>`/ip4/127.0.0.1/tcp/${client.peerPort}/p2p/${client.identity}`);
-  await bob.api('settings', settings);
-  await until(async () => (await alice.state()).peers.some(peer => peer.id === bob.identity) && (await bob.state()).peers.some(peer => peer.id === alice.identity), 'mutual peer discovery');
+  await until(async () => {
+    const states = await Promise.all([alice, bob, charlie].map(client => client.state()));
+    return [alice, bob, charlie].every((client, index) => [alice, bob, charlie].filter(other => other !== client).every(other => states[index].peers.some(peer => peer.id === other.identity)));
+  }, 'automatic three-peer discovery');
   for (const [i, color] of ['0x278065', '0xdb653d'].entries()) {
     const filename = path.join(work, `session-clip-${i}.mp4`);
     const result = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=96x64:r=10`, '-t', '0.3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-metadata', `title=ClipClub-session-${i}`, '-y', filename], {encoding: 'utf8', timeout: 20_000});

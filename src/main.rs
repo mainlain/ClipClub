@@ -5,6 +5,7 @@
 mod app;
 mod core;
 mod crypto;
+mod discovery;
 mod http;
 mod media;
 mod peer;

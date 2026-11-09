@@ -1,5 +1,5 @@
 use crate::{
-    core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Settings, Store},
+    core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Store},
     crypto::{ChainRoll, Crypto, SeederDistribution, SeederRecipient},
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
@@ -154,12 +154,7 @@ impl App {
         let torrent_port = engine.port().unwrap_or(torrent_port);
         let downloader = TorrentEngine::downloader(root.join("cache")).await?;
         let roll_downloader = TorrentEngine::downloader(root.join("roll-cache")).await?;
-        let (mesh, mut events) = peer::start(
-            identity.clone(),
-            p2p_port,
-            store.data.settings.bootstrap_peers.clone(),
-        )
-        .await?;
+        let (mesh, mut events) = peer::start(identity.clone(), p2p_port).await?;
         let app = Arc::new(Self {
             updates: Arc::new(crate::update::Updater::new(root.clone())),
             crypto: Crypto::open(&root)?,
@@ -612,7 +607,7 @@ impl App {
             let stats = handle.stats();
             json!({"id":id,"downloaded":stats.progress_bytes,"total":stats.total_bytes})
         });
-        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"population":population,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.keys().map(|id|json!({"id":id})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
+        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"population":population,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.keys().map(|id|json!({"id":id})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
     }
     pub async fn upload(&self, filename: String, bytes: Vec<u8>) -> Result<Value> {
         let _guard = self.mutation.lock().await;
@@ -1177,16 +1172,6 @@ impl App {
         }
     }
 
-    pub async fn settings(&self, settings: Settings) -> Result<()> {
-        settings.validate()?;
-        for address in &settings.bootstrap_peers {
-            self.mesh.dial(address.clone()).await?;
-        }
-        self.store.lock().await.set_settings(settings)?;
-        self.announce().await;
-        self.wake.notify_one();
-        Ok(())
-    }
     pub async fn media_path(&self, id: &str) -> Result<(PathBuf, String)> {
         let store = self.store.lock().await;
         let clip = store.data.catalog.get(id).context("Unknown clip")?;

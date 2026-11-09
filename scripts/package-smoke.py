@@ -88,13 +88,15 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
             assert (profile / 'bin' / 'ffprobe').is_file(), 'Embedded validator was not installed'
             if attempt == 0:
                 saved_identity = state['profile_id']
-                settings = state['settings']
-                saved_peers = [f'/ip4/127.0.0.1/tcp/9/p2p/{saved_identity}']
-                settings['bootstrap_peers'] = saved_peers
-                request('settings', settings)
             else:
                 assert state['profile_id'] == saved_identity
-                assert state['settings']['bootstrap_peers'] == saved_peers
+            assert 'settings' not in state
+            assert 'id="bootstrap-peers"' not in html
+            try:
+                request('settings', {'bootstrap_peers': []})
+                raise AssertionError('Manual peer settings endpoint is still available')
+            except urllib.error.HTTPError as error:
+                assert error.code == 404
             for payload in ({'wager':1}, {'wager':1,'multiplier':9}, {'transaction_hash':'invalid'}):
                 try:
                     request('roll', payload)
@@ -117,4 +119,4 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
                     process.kill()
                     process.wait()
             log.close()
-print('PASS: compact menu, library sorting, 좋아 metadata, default MegaETH mainnet, zero token grants, no local RNG rolls or unpaid positive ratings, embedded validator, identity/settings persistence; temporary profiles removed.')
+print('PASS: compact menu, library sorting, 좋아 metadata, default MegaETH mainnet, zero token grants, no local RNG rolls or unpaid positive ratings, embedded validator, identity persistence, no manual peer controls; temporary profiles removed.')

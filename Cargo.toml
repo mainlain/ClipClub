@@ -23,7 +23,7 @@ chacha20poly1305 = "0.10"
 fs2 = "0.4"
 futures = "0.3"
 hex = "0.4"
-libp2p = { version = "0.57.1", features = ["tokio", "tcp", "noise", "yamux", "gossipsub", "mdns", "macros", "ed25519", "dns"] }
+libp2p = { version = "0.57.1", features = ["tokio", "tcp", "noise", "yamux", "gossipsub", "mdns", "macros", "ed25519", "dns", "upnp"] }
 libc = "0.2"
 librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls", "disable-upload"] }
 rand = "0.9"

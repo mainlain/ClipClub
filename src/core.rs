@@ -133,32 +133,6 @@ fn validate_hex(value: &str, length: usize, label: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct Settings {
-    pub bootstrap_peers: Vec<String>,
-}
-
-impl Settings {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.bootstrap_peers.len() <= 32,
-            "At most 32 bootstrap peers are allowed"
-        );
-        for peer in &self.bootstrap_peers {
-            ensure!(peer.len() <= 512, "Peer address is too long");
-            let address: libp2p::Multiaddr = peer.parse().context("Invalid peer multiaddress")?;
-            ensure!(
-                address
-                    .iter()
-                    .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(_))),
-                "Peer addresses must include /p2p/<peer-id>"
-            );
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LocalClip {
     pub clip_id: String,
@@ -413,7 +387,6 @@ pub fn reward_micropoints(score: u8, seeders: usize, total_users: usize) -> Resu
 pub struct State {
     pub version: u32,
     pub profile_id: String,
-    pub settings: Settings,
     pub catalog: BTreeMap<String, Clip>,
     pub library: BTreeMap<String, LocalClip>,
     pub watched: BTreeSet<String>,
@@ -427,7 +400,6 @@ impl State {
         Self {
             version: 1,
             profile_id,
-            settings: Settings::default(),
             catalog: BTreeMap::new(),
             library: BTreeMap::new(),
             watched: BTreeSet::new(),
@@ -466,7 +438,6 @@ impl Store {
                 data.profile_id == identity_id,
                 "State belongs to a different identity"
             );
-            data.settings.validate()?;
             ensure!(
                 data.peer_activity.len() <= MAX_ACTIVITY_PEERS,
                 "Peer activity history is too large"
@@ -567,13 +538,6 @@ impl Store {
             return Err(error);
         }
         Ok(())
-    }
-
-    pub fn set_settings(&mut self, settings: Settings) -> Result<()> {
-        settings.validate()?;
-        let before = self.data.clone();
-        self.data.settings = settings;
-        self.commit(before)
     }
 
     /// Fresh authenticated presence counts even when it advertises no clips.

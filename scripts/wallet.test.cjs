@@ -8,7 +8,7 @@ function fixture({exists=true,unlocked=true}={}){
   const elements=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{id,value:id==='wallet-mode'?'create':id==='library-sort'?'recency':id==='roll-wager'?'1':'',textContent:'',innerHTML:'',open:false,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},showModal(){this.open=true;},close(){this.open=false;this.listeners.close?.({});},classList:{toggle(){},add(){},remove(){}},pause(){},load(){},removeAttribute(name){delete this[name];},play(){return Promise.resolve();}}]));
   const calls=[],events={},documentEvents={},walletCalls=[],storage=new Map(),downloads=[];
   let initialStateRequest;
-  const state={crypto:{local_wallet:{exists,address:exists?address:null,unlocked:exists&&unlocked},native_balance_wei:'1234567890123456789',name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:exists?address:null,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',balance_units:'1000000000',total_supply_units:'1000000000000000',error:null,rating_session:null,pending_transaction:null},session:false,queue:[],settings:{bootstrap_peers:[]},library:[],peers:[],addresses:[],profile_id:'peer-a',temporary_seeds:0,roll:null};
+  const state={crypto:{local_wallet:{exists,address:exists?address:null,unlocked:exists&&unlocked},native_balance_wei:'1234567890123456789',name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:exists?address:null,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',balance_units:'1000000000',total_supply_units:'1000000000000000',error:null,rating_session:null,pending_transaction:null},session:false,queue:[],library:[],peers:[],addresses:[],profile_id:'peer-a',temporary_seeds:0,roll:null};
   const provider={on(name,fn){events[name]=fn;},async request(request){walletCalls.push(request);if(['eth_accounts','eth_requestAccounts'].includes(request.method))return[browserAddress];if(request.method==='eth_chainId')return'0x10e6';throw Error(`Unexpected browser request ${request.method}`);}};
   const context=vm.createContext({document:{body:{dataset:{page:'settings'},appendChild(){}},getElementById(id){assert.ok(elements.has(id),id);return elements.get(id);},querySelector(selector){return selector.startsWith('meta')?{content:'token'}:{addEventListener(){},setAttribute(){},focus(){}};},querySelectorAll(selector){return selector==='.page'?['home','seed','rate','roll','settings'].map(page=>elements.get(`page-${page}`)):[];},addEventListener(name,fn){documentEvents[name]=fn;},createElement(){return{click(){downloads.push(this);},remove(){}};}},window:{ethereum:provider,addEventListener(){},scrollTo(){},localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}},fetch(){return new Promise(resolve=>{initialStateRequest=resolve;});},FormData:class{},Blob,URL:{createObjectURL(blob){downloads.blob=blob;return'blob:wallet-backup';},revokeObjectURL(){}},setTimeout(){},clearTimeout(){},setInterval(){}});
   const startup=vm.runInContext(source,context);context.fixture=state;vm.runInContext('state=fixture;page="settings";',context);
@@ -17,7 +17,6 @@ function fixture({exists=true,unlocked=true}={}){
     const body=options?.body?JSON.parse(options.body):null;calls.push({url,body});
     const ok=value=>({ok:true,json:async()=>value});
     if(url==='/api/state')return ok(state);
-    if(url==='/api/settings'){Object.assign(state.settings,body);return ok({});}
     if(['/api/wallet/create','/api/wallet/import','/api/wallet/restore','/api/wallet/unlock'].includes(url)){state.crypto.local_wallet={exists:true,address,unlocked:true};state.crypto.wallet=address;return ok({address});}
     if(url==='/api/wallet/backup')return ok({version:1,address,ciphertext:'encrypted-keystore-only'});
     if(url==='/api/crypto/transaction'){
@@ -91,14 +90,22 @@ test('the balance action opens wallet details and keeps queued funds visible acr
   assert.equal(app.elements.get('balance').textContent,'1,997.00 ✨');
   assert.equal(app.elements.get('wallet-dialog').open,false);
 });
-test('peer settings save only bootstrap addresses',async()=>{
-  const app=fixture();app.run('fillSettings(true)');
-  app.elements.get('bootstrap-peers').value='  /ip4/127.0.0.1/tcp/42931/p2p/peer-b  \n\n';
-  await app.elements.get('settings-form').listeners.submit(submitEvent);
-  const saved=app.calls.find(call=>call.url==='/api/settings');
-  assert.deepEqual(saved.body,{bootstrap_peers:['/ip4/127.0.0.1/tcp/42931/p2p/peer-b']});
-  assert.equal(app.elements.get('save-status').textContent,'Saved');
-  assert.deepEqual(app.state.settings.bootstrap_peers,saved.body.bootstrap_peers);
+test('automatic discovery shows connection progress without manual peer controls',async()=>{
+  const app=fixture();app.state.session=true;await app.start();
+  for(const id of ['bootstrap-peers','connect-peer','settings-form','save-status'])assert.equal(app.elements.has(id),false);
+  assert.equal(app.elements.get('peer-status').textContent,'Finding peers…');
+  assert.equal(app.elements.get('discovery-status').textContent,'Finding peers…');
+  assert.equal(app.elements.get('waiting-message').textContent,'Finding peers automatically…');
+  app.state.peers=[{id:'peer-b'}];app.state.addresses=['/ip4/192.168.1.20/tcp/42931/p2p/peer-a'];await app.run('refresh()');
+  assert.equal(app.elements.get('peer-status').textContent,'1 peer connected');
+  assert.equal(app.elements.get('discovery-status').textContent,'1 peer connected');
+  assert.equal(app.elements.get('waiting-message').textContent,'Waiting for a clip from your peers.');
+  assert.equal(app.elements.get('peer-id').textContent,'peer-a');
+  assert.match(app.elements.get('listen-addresses').innerHTML,/data-address="\/ip4\/192\.168\.1\.20\/tcp\/42931\/p2p\/peer-a"/);
+  assert.equal(app.calls.some(call=>call.url==='/api/settings'),false);
+  app.respond=async()=>{throw Error('Local interface unavailable');};await app.run('refresh()');
+  assert.equal(app.elements.get('peer-status').textContent,'Client disconnected');
+  assert.equal(app.elements.get('discovery-status').textContent,'Client disconnected');
 });
 
 test('the main wallet action opens native setup without asking a browser wallet',async()=>{

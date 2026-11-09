@@ -89,11 +89,6 @@ class Client:
     def state(self):
         return self.request('state')
 
-    def connect(self, other):
-        settings = self.state()['settings']
-        settings['bootstrap_peers'] = [f'/ip4/127.0.0.1/tcp/{other.ports[1]}/p2p/{other.identity}']
-        self.request('settings', settings)
-
     def upload(self, path, name=None):
         boundary = 'clipcrop-integration-boundary'
         raw = (f'--{boundary}\r\nContent-Disposition: form-data; name="video"; filename="{name or path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode() + path.read_bytes() + f'\r\n--{boundary}--\r\n'.encode())
@@ -131,8 +126,7 @@ try:
         assert crypto['balance_units'] == '0' and crypto['total_supply_units'] == '0'
         assert crypto['wallet'] is None and crypto['contract'] is None
         assert 'balance' not in client.state(), 'Legacy points were exposed as spendable money'
-    bob.connect(alice)
-    wait_for(lambda: len(alice.state()['peers']) == 1 and len(bob.state()['peers']) == 1, 'mutual presence')
+    wait_for(lambda: any(peer['id'] == bob.identity for peer in alice.state()['peers']) and any(peer['id'] == alice.identity for peer in bob.state()['peers']), 'automatic mutual discovery')
     assert_http_error(lambda: urllib.request.urlopen(alice.url + '/api/state'), 'Invalid local session')
     bad = urllib.request.Request(alice.url + '/api/state', headers={'x-clipcrop-token':alice.token, 'Origin':'https://untrusted.example'})
     assert_http_error(lambda: urllib.request.urlopen(bad))
@@ -177,11 +171,8 @@ try:
     bob.upload(by_hash[current['id']])
     assert bob.state()['library'][0]['added_at_ms'] == promoted_row['added_at_ms']
     bob.request('session', {'active':False})
-    charlie = Client('Charlie'); charlie.connect(alice)
-    settings = charlie.state()['settings']
-    settings['bootstrap_peers'].append(f'/ip4/127.0.0.1/tcp/{bob.ports[1]}/p2p/{bob.identity}')
-    charlie.request('settings', settings)
-    wait_for(lambda: len(charlie.state()['peers']) == 2, 'three peer swarm')
+    charlie = Client('Charlie')
+    wait_for(lambda: all({other.identity for other in (alice, bob, charlie) if other is not client}.issubset({peer['id'] for peer in client.state()['peers']}) for client in (alice, bob, charlie)), 'automatic three-peer discovery')
     wait_for(lambda: len(charlie.state()['queue']) >= 1, 'third peer has ready clip')
     charlie.request('session', {'active':True})
     # Pass other clips free until the shared duplicate clip is reached.
@@ -219,6 +210,7 @@ try:
     bob.root = moved_root
     bob.start()
     assert bob.identity == bob_identity
+    wait_for(lambda: {alice.identity, charlie.identity}.issubset({peer['id'] for peer in bob.state()['peers']}) and all(any(peer['id'] == bob.identity for peer in client.state()['peers']) for client in (alice, charlie)), 'automatic rediscovery after restart')
     assert bob.state()['crypto']['balance_units'] == '0'
     assert not bob.state()['crypto']['configured']
     assert len(bob.state()['library']) == 1 and bob.state()['library'][0]['seeding']

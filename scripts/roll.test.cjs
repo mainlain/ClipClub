@@ -29,7 +29,7 @@ function interfaceFixture(){
     fetch(){return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){},
   });
   vm.runInContext(source,context);
-  const fixture={crypto:{local_wallet:{exists:true,address,unlocked:true},name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',explorer_url:'https://mega.etherscan.io',balance_units:'100000000',total_supply_units:'1000000000',error:null},roll:null,settings:{bootstrap_peers:[]},library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a'};
+  const fixture={crypto:{local_wallet:{exists:true,address,unlocked:true},name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',explorer_url:'https://mega.etherscan.io',balance_units:'100000000',total_supply_units:'1000000000',error:null},roll:null,library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a'};
   context.fixture=fixture;context.address=address;vm.runInContext('state=fixture;page="roll";reviewNativeTransaction=async()=>"approval-1";',context);
   const app={context,fixture,elements,walletCalls,calls,storage,send:async()=>({hash}),receipt:async()=>({status:"0x1"}),run:code=>vm.runInContext(code,context),render:()=>vm.runInContext('renderRoll();',context)};
   app.respond=async(url,options)=>{
