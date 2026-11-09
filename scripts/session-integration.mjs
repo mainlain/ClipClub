@@ -202,7 +202,6 @@ async function run() {
   }
   assert.equal(await token.ratingCredit(raterAddress),0n);
   const settings = (await bob.state()).settings;
-  settings.display_name = 'Session test Bob';
   settings.bootstrap_peers = [alice,charlie].map(client=>`/ip4/127.0.0.1/tcp/${client.peerPort}/p2p/${client.identity}`);
   await bob.api('settings', settings);
   await until(async () => (await alice.state()).peers.some(peer => peer.id === bob.identity) && (await bob.state()).peers.some(peer => peer.id === alice.identity), 'mutual peer discovery');

@@ -265,7 +265,7 @@ function renderWallet(){
   $('reserved-balance').hidden=!queuedRatingCount();$('reserved-balance').textContent=`${fmtTokens(queuedTokenUnits())} ✨ queued · not paid`;
   $('balance').title=crypto?.wallet?`Wallet balance ${fmtTokens(crypto.balance_units)} ✨; available after queued ratings`:'';
   $('connect-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
-  $('connect-wallet').textContent=nativeWalletSelected()&&!localWallet().unlocked?'Unlock wallet':'Wallet';
+  $('connect-wallet').title=nativeWalletSelected()&&!localWallet().unlocked?'Unlock wallet':'Wallet details';
   $('crypto-network').textContent=crypto?`${crypto.chain_name} · ${crypto.chain_id}`:'MegaETH';
   $('crypto-wallet').textContent=crypto?.wallet||'Disconnected';
   $('crypto-contract').textContent=crypto?.contract||'Not configured';
@@ -391,7 +391,7 @@ function navigate(next){
     $('breadcrumb').textContent={home:'Home',seed:'Upload',rate:'Rate',roll:'Roll',settings:'Settings'}[page];
     if(page!=='rate')$('player').pause();
     if(page!=='roll')$('roll-player').pause();
-    const focusTarget=document.querySelector(page==='home'?`[data-page="${previous}"]`:`#page-${page} h1`);
+    const focusTarget=document.querySelector(page==='home'?`[data-page="${previous}"]`:`#page-${page}`);
     focusTarget?.setAttribute?.('tabindex',page==='home'?'0':'-1');
     focusTarget?.focus?.({preventScroll:true});
     window.scrollTo?.({top:0});
@@ -407,7 +407,7 @@ function navigate(next){
 }
 function fillSettings(force=false){
   if(!state||(!force&&settingsDirty))return;
-  $('display-name').value=state.settings.display_name;$('muted').checked=state.settings.muted;$('prefetch').checked=state.settings.prefetch;$('volume').value=state.settings.volume;$('bootstrap-peers').value=state.settings.bootstrap_peers.join('\n');
+  $('bootstrap-peers').value=state.settings.bootstrap_peers.join('\n');
   document.querySelectorAll('#settings-form input, #settings-form textarea, #settings-form button').forEach(control=>control.disabled=false);
   if(force)settingsDirty=false;
 }
@@ -415,17 +415,15 @@ function render(){
   if(!state)return;
   if(state.notice&&state.notice!==lastNotice){lastNotice=state.notice;toast(state.notice);}
   renderWallet();
-  $('profile-name').textContent=state.settings.display_name;
   $('seed-count').textContent=state.library.length;$('ready-count').textContent=state.queue.length;$('queue-total').textContent=state.queue.length;
   $('peer-status').textContent=state.peers.length?`${state.peers.length} peer${state.peers.length===1?'':'s'} connected`:'Finding peers…';
   $('library-cap').textContent=`${state.library.length} / 100 clips`;
   $('stat-seeds').innerHTML=`${state.library.filter(item=>item.seeding).length} <small>clips</small>`;
   $('stat-storage').innerHTML=`${(state.library.reduce((sum,item)=>sum+item.clip.size,0)/1e6).toFixed(1)} <small>MB</small>`;
-  $('collection-count').textContent=state.library.length;
   renderLibrary();
   $('queue-slots').innerHTML=Array.from({length:10},(_,i)=>`<span class="${i<state.queue.length?'ready':i===state.queue.length&&state.downloading?'downloading':''}">${i<state.queue.length?'✓':i+1}</span>`).join('');
   const d=state.downloading;
-  const downloadStatus=d?`Downloading · ${Math.min(100,Math.round(d.downloaded/Math.max(1,d.total)*100))}%`:state.queue.length>=10?'Queue full':!state.session&&!state.settings.prefetch?'Downloads paused':state.peers.length?'Waiting for more clips…':'Waiting for peers…';
+  const downloadStatus=d?`Downloading · ${Math.min(100,Math.round(d.downloaded/Math.max(1,d.total)*100))}%`:state.queue.length>=10?'Queue full':state.peers.length?'Waiting for more clips…':'Waiting for peers…';
   if($('download-status').textContent!==downloadStatus)$('download-status').textContent=downloadStatus;
   $('session-button').disabled=sessionToggleBusy||busy||walletBusy||rollBusy||transactionBusy;
   $('session-button').textContent=state.session?`End session${state.temporary_seeds?` · ${state.temporary_seeds} seeding`:''} →`:'Start session →';
@@ -433,7 +431,7 @@ function render(){
   if(current?.id!==next?.id){
     current=next;
     const player=$('player');player.pause();
-    if(next){player.src=mediaUrl(next.id);player.muted=state.settings.muted;player.volume=state.settings.volume;player.load();}
+    if(next){player.src=mediaUrl(next.id);player.load();}
     else{player.removeAttribute('src');player.load();}
   }
   current=next;
@@ -537,7 +535,7 @@ function renderRoll(){
   const key=result?`${result.id}:${clip?.id||''}`:'';
   if(key!==rollMediaKey){
     rollMediaKey=key;player.pause();
-    if(clip){player.src=mediaUrl(clip.id);player.muted=state.settings.muted;player.volume=state.settings.volume;}
+    if(clip){player.src=mediaUrl(clip.id);}
     else player.removeAttribute('src');
     player.load();
   }
@@ -598,7 +596,6 @@ async function uploads(files){
   uploading=false;$('file-input').value='';
 }
 async function copy(text){try{await navigator.clipboard.writeText(text);toast('Copied to clipboard.');}catch{toast('Select and copy the address shown in Settings.');}}
-document.querySelector('.brand').addEventListener('click',event=>{event.preventDefault();navigate('home');});
 document.querySelectorAll('button[data-page]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.page)));
 document.querySelectorAll('[data-goto]').forEach(button=>button.addEventListener('click',()=>navigate(button.dataset.goto)));
 $('rating-keys').innerHTML=Array.from({length:10},(_,score)=>`<button data-score="${score}" aria-label="Rate ${score}, queue ${score} ✨" disabled>${score}</button>`).join('');
@@ -654,7 +651,7 @@ $('preview-dialog').addEventListener('close',()=>{$('preview-video').pause();$('
 $('player').addEventListener('error',()=>{if(current)toast('Your system could not play this codec. Press 0 to pass without spending tokens.');});
 document.querySelectorAll('#settings-form input, #settings-form textarea, #settings-form button').forEach(control=>control.disabled=true);
 $('settings-form').addEventListener('input',()=>settingsDirty=true);
-$('settings-form').addEventListener('submit',async event=>{event.preventDefault();if(!state){toast('Settings are still loading. Try again in a moment.');return;}try{await api('settings',{display_name:$('display-name').value.trim(),muted:$('muted').checked,prefetch:$('prefetch').checked,volume:Number($('volume').value),bootstrap_peers:$('bootstrap-peers').value.split('\n').map(s=>s.trim()).filter(Boolean)});settingsDirty=false;$('save-status').textContent='Saved';await refresh();}catch(error){toast(error.message);}});
+$('settings-form').addEventListener('submit',async event=>{event.preventDefault();if(!state){toast('Settings are still loading. Try again in a moment.');return;}try{await api('settings',{bootstrap_peers:$('bootstrap-peers').value.split('\n').map(s=>s.trim()).filter(Boolean)});settingsDirty=false;$('save-status').textContent='Saved';await refresh();}catch(error){toast(error.message);}});
 $('copy-id').addEventListener('click',()=>copy(state.profile_id));
 $('check-updates').addEventListener('click',checkUpdates);
 $('install-update').addEventListener('click',installUpdate);

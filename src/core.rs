@@ -133,40 +133,14 @@ fn validate_hex(value: &str, length: usize, label: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    pub display_name: String,
-    pub muted: bool,
-    pub volume: f64,
-    pub prefetch: bool,
     pub bootstrap_peers: Vec<String>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            display_name: "Anonymous peer".into(),
-            muted: true,
-            volume: 0.7,
-            prefetch: true,
-            bootstrap_peers: Vec::new(),
-        }
-    }
 }
 
 impl Settings {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.display_name.trim().is_empty()
-                && self.display_name.len() <= 80
-                && !self.display_name.chars().any(char::is_control),
-            "Display name must contain 1–80 characters"
-        );
-        ensure!(
-            self.volume.is_finite() && (0.0..=1.0).contains(&self.volume),
-            "Volume must be between 0 and 1"
-        );
         ensure!(
             self.bootstrap_peers.len() <= 32,
             "At most 32 bootstrap peers are allowed"

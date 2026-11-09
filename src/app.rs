@@ -43,7 +43,6 @@ pub struct App {
     pub torrent_port: u16,
 }
 struct Presence {
-    name: String,
     seeded: Vec<String>,
     permanent: Vec<String>,
     wallet: Option<String>,
@@ -289,13 +288,12 @@ impl App {
             .iter()
             .filter_map(|id| store.data.catalog.get(id).cloned())
             .collect();
-        let name = store.data.settings.display_name.clone();
         let permanent = runtime.permanent.keys().cloned().collect();
         drop(runtime);
         drop(store);
         if let Err(error) = self
             .mesh
-            .announce(clips, ids, name, self.torrent_port, permanent, wallet)
+            .announce(clips, ids, self.torrent_port, permanent, wallet)
             .await
         {
             self.notice(&error.to_string()).await;
@@ -345,7 +343,6 @@ impl App {
             }
             PeerEvent::Presence {
                 peer,
-                name,
                 seeded,
                 permanent,
                 wallet,
@@ -367,7 +364,6 @@ impl App {
                 self.runtime.lock().await.peers.insert(
                     peer,
                     Presence {
-                        name,
                         seeded,
                         permanent,
                         wallet,
@@ -616,7 +612,7 @@ impl App {
             let stats = handle.stats();
             json!({"id":id,"downloaded":stats.progress_bytes,"total":stats.total_bytes})
         });
-        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"population":population,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.iter().map(|(id,p)|json!({"id":id,"name":p.name})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
+        json!({"version":env!("CARGO_PKG_VERSION"),"update":update,"profile_id":local,"crypto":crypto,"population":population,"settings":store.data.settings,"library":library,"queue":queue,"session":rt.session,"temporary_seeds":rt.temporary.len(),"peers":rt.peers.keys().map(|id|json!({"id":id})).collect::<Vec<_>>(),"addresses":rt.addresses,"downloading":downloading,"notice":rt.notice,"roll":rt.roll,"data_folder":self.root,"p2p_port":self.p2p_port,"torrent_port":self.torrent_port,"limits":Limits::default()})
     }
     pub async fn upload(&self, filename: String, bytes: Vec<u8>) -> Result<Value> {
         let _guard = self.mutation.lock().await;
@@ -1227,7 +1223,7 @@ impl App {
             let choice = {
                 let store = self.store.lock().await;
                 let rt = self.runtime.lock().await;
-                if (!store.data.settings.prefetch && !rt.session) || rt.ready.len() >= 10 {
+                if rt.ready.len() >= 10 {
                     None
                 } else {
                     let candidates = store.data.catalog.values().filter(|clip| {
@@ -1349,7 +1345,6 @@ mod tests {
         let rater = "0x1111111111111111111111111111111111111111";
         let wallet = "0x2222222222222222222222222222222222222222";
         let presence = |permanent, wallet: &str, age| Presence {
-            name: "peer".into(),
             seeded: vec!["clip".into()],
             permanent,
             wallet: Some(wallet.into()),

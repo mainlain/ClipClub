@@ -15,7 +15,7 @@ function result(id='1',multiplier=9,media=clip){return {id,status:'settled',mult
 function interfaceFixture(){
   const elements=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{
     innerHTML:'',textContent:'',value:id==='roll-wager'?'1':id==='library-sort'?'recency':'',
-    paused:true,ended:false,loop:true,playCount:0,pauseCount:0,loadCount:0,
+    paused:true,ended:false,loop:true,muted:false,volume:1,playCount:0,pauseCount:0,loadCount:0,
     listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},
     showModal(){this.open=true;},close(){this.open=false;},
     classList:{toggle(){},add(){},remove(){}},
@@ -29,7 +29,7 @@ function interfaceFixture(){
     fetch(){return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){},
   });
   vm.runInContext(source,context);
-  const fixture={crypto:{local_wallet:{exists:true,address,unlocked:true},name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',explorer_url:'https://mega.etherscan.io',balance_units:'100000000',total_supply_units:'1000000000',error:null},roll:null,settings:{display_name:'Peer',muted:true,volume:.5,bootstrap_peers:[],prefetch:true},library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a'};
+  const fixture={crypto:{local_wallet:{exists:true,address,unlocked:true},name:'좋아',symbol:'✨',decimals:6,configured:true,wallet:address,contract,chain_id:4326,chain_hex:'0x10e6',chain_name:'MegaETH',explorer_url:'https://mega.etherscan.io',balance_units:'100000000',total_supply_units:'1000000000',error:null},roll:null,settings:{bootstrap_peers:[]},library:[],queue:[],peers:[],addresses:[],session:false,profile_id:'peer-a'};
   context.fixture=fixture;context.address=address;vm.runInContext('state=fixture;page="roll";reviewNativeTransaction=async()=>"approval-1";',context);
   const app={context,fixture,elements,walletCalls,calls,storage,send:async()=>({hash}),receipt:async()=>({status:"0x1"}),run:code=>vm.runInContext(code,context),render:()=>vm.runInContext('renderRoll();',context)};
   app.respond=async(url,options)=>{
@@ -61,11 +61,12 @@ test('Roll plays once and polls preserve an ended clip or manual pause',()=>{
   const app=interfaceFixture(),player=app.elements.get('roll-player');
   assert.doesNotMatch(html.match(/<video id="roll-player"[^>]*>/)[0],/\bloop\b/);
   assert.match(html.match(/<video id="player"[^>]*>/)[0],/\bloop\b/);
-  app.fixture.roll=result();app.render();assert.equal(player.loop,false);assert.equal(player.playCount,1);
+  app.fixture.roll=result();app.render();assert.equal(player.loop,false);assert.equal(player.playCount,1);assert.equal(player.muted,false);assert.equal(player.volume,1);
   const loads=player.loadCount;player.paused=true;player.ended=true;app.render();app.render();
   assert.equal(player.playCount,1);assert.equal(player.loadCount,loads);
   player.ended=false;app.render();assert.equal(player.playCount,1);
-  app.fixture.roll=result('2');app.render();assert.equal(player.playCount,2);
+  player.muted=true;player.volume=.35;
+  app.fixture.roll=result('2');app.render();assert.equal(player.playCount,2);assert.equal(player.muted,true);assert.equal(player.volume,.35);
 });
 test('zero burns the displayed stake, removes the clip, and a downloaded win starts once',()=>{
   const app=interfaceFixture(),player=app.elements.get('roll-player');app.fixture.roll=result();app.render();

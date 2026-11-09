@@ -13,21 +13,15 @@ body { margin: 0; background: var(--paper); color: var(--ink); font: 14px -apple
 button, input, textarea, select { font: inherit; }
 button, a, input, textarea, select, summary { outline-offset: 4px; }
 :focus-visible { outline: 2px solid var(--orange); }
-h1:focus { outline: none; }
+.page:focus { outline: none; }
 button { color: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: .4; }
 a { color: inherit; text-decoration: none; }
 [hidden] { display: none !important; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .app { min-height: 100vh; display: flex; flex-direction: column; }
-.app-header { min-height: 88px; padding: 24px 28px 16px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.brand { display: inline-flex; align-items: center; gap: 9px; font-size: 21px; letter-spacing: -.9px; font-weight: 650; }
-.brandmark { width: 27px; height: 28px; background: var(--orange); color: white; display: inline-flex; justify-content: center; align-items: center; border-radius: 6px; font: italic 25px Georgia; letter-spacing: -5px; padding-right: 5px; }
-.brandmark span { transform: rotate(180deg); display: inline-block; }
-.balance-label { font-size: 8px; letter-spacing: 1.3px; color: var(--muted); }
-.balance { font-size: 20px; line-height: 1.2; font-weight: 500; letter-spacing: -.7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
-.balance span { color: var(--muted); font-size: 14px; font-weight: 400; }
-main { flex: 1; width: 100%; max-width: 1080px; margin: 0 auto; padding: 10px 28px 28px; min-width: 0; }
+.balance { font-size: 14px; line-height: 1.4; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
+main { flex: 1; width: 100%; max-width: 1080px; margin: 0 auto; padding: 24px 28px 28px; min-width: 0; }
 body[data-page="home"] main { display: flex; flex-direction: column; justify-content: center; max-width: 480px; padding-top: 24px; padding-bottom: 21px; }
 body[data-page="home"] .screen-bar { display: none; }
 .home-page h1 { color: var(--muted); font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 1.3px; text-transform: uppercase; margin: 0 0 18px 1px; }
@@ -43,14 +37,12 @@ body[data-page="home"] .screen-bar { display: none; }
 .app-footer { min-height: 55px; padding: 16px 28px 20px; display: flex; justify-content: space-between; align-items: center; gap: 18px; color: var(--muted); font-size: 10px; }
 .peer-status { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .status-dot { width: 5px; height: 5px; flex-shrink: 0; background: #8b9d7c; display: inline-block; border-radius: 50%; }
-#profile-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; max-width: 45%; }
+.wallet-balance { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; max-width: 65%; margin-left: auto; padding: 6px 0; background: transparent; border: 0; }
+.wallet-balance:hover .balance { color: var(--orange); }
 .screen-bar { margin-bottom: 22px; }
 .back-button { display: inline-flex; align-items: center; gap: 7px; background: transparent; border: 0; color: var(--muted); font-size: 12px; padding: 6px 0; }
 .back-button:hover { color: var(--orange); }
-h1 { font: 400 29px/1.2 Georgia, serif; letter-spacing: -.7px; margin: 0; }
 p { color: var(--muted); line-height: 1.65; }
-.page-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 20px; }
-.tag { font-size: 9px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); letter-spacing: .4px; white-space: nowrap; }
 .watch-layout { display: grid; grid-template-columns: minmax(0, 1fr) 215px; gap: 24px; }
 .watch-layout > *, .watch-aside { min-width: 0; }
 .player { background: #20251f; aspect-ratio: 16/10; border-radius: 5px; position: relative; overflow: hidden; }
@@ -138,20 +130,12 @@ details summary:hover { color: var(--orange); }
 .update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 14px; }
 .app-updates #update-status.update-available { color: var(--green); font-weight: 500; }
 .field-label { display: block; color: var(--muted); font-size: 11px; margin: 16px 0 8px; }
-input:not([type="checkbox"]):not([type="range"]), textarea { background: #f3f5ef; border: 1px solid #d5ddcb; border-radius: 4px; padding: 11px 12px; color: var(--ink); width: 100%; font-size: 12px; }
+input, textarea { background: #f3f5ef; border: 1px solid #d5ddcb; border-radius: 4px; padding: 11px 12px; color: var(--ink); width: 100%; font-size: 12px; }
 textarea { font-family: ui-monospace, monospace; resize: vertical; }
 .field-help { font-size: 10px; color: var(--muted); line-height: 1.8; }
 .copy-field { display: flex; gap: 16px; align-items: center; }
 .copy-field code, .address-list { font-size: 10px; color: var(--green); word-break: break-all; }
 .copy-field code { flex: 1; min-width: 0; }
-.toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; gap: 20px; }
-.toggle-row strong { font-size: 12px; font-weight: 400; }
-input[type="checkbox"] { appearance: none; width: 32px; height: 19px; border-radius: 12px; background: #d4ddc9; position: relative; flex-shrink: 0; cursor: pointer; }
-input[type="checkbox"]::after { content: ""; position: absolute; width: 13px; height: 13px; border-radius: 50%; background: white; top: 3px; left: 3px; transition: left .15s; }
-input[type="checkbox"]:checked { background: #788e64; }
-input[type="checkbox"]:checked::after { left: 16px; }
-input[type="range"] { accent-color: #788e64; width: 45%; }
-.volume-row { font-size: 11px; display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
 .address-list { display: grid; gap: 9px; padding: 12px; background: #edf1e6; border-radius: 4px; }
 .address-list button { text-align: left; font: inherit; color: inherit; border: 0; background: none; padding: 4px 0; overflow-wrap: anywhere; }
 .settings-help { margin-top: 18px; }
@@ -200,16 +184,12 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
   .row-actions { margin-left: auto; }
 }
 @media (max-width: 400px) {
-  .app-header { padding: 20px 20px 12px; min-height: 80px; }
   main { padding-left: 20px; padding-right: 20px; }
   body[data-page="home"] main { padding: 20px 20px 26px; }
   .app-footer { padding: 14px 20px 18px; font-size: 9px; }
   .home-page h1 { margin-bottom: 14px; }
   .main-menu { gap: 8px; }
   .main-menu button { min-height: 58px; padding: 14px 17px; }
-  .page-heading { gap: 8px; }
-  h1 { font-size: 26px; }
-  .tag { font-size: 8px; padding: 6px; }
   .player { aspect-ratio: 4/3; }
   .player-empty { padding: 16px; }
   .player-empty h2 { font-size: 18px; }
@@ -228,14 +208,6 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }
 }
-.wallet-header { display: flex; align-items: center; gap: 11px; }
-.token-logo { flex-shrink: 0; border-radius: 9px; }
-.token-balance { min-width: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.wallet-header .button { font-size: 10px; padding: 9px 11px; margin-left: 7px; }
-.economy-intro { display: flex; gap: 14px; align-items: center; margin: 0 0 20px; }
-.economy-intro strong { font-size: 27px; letter-spacing: -.8px; font-weight: 600; }
-.economy-intro strong span { font-size: 22px; }
-.economy-intro p { margin: 6px 0 0; font-size: 11px; }
 .wallet-settings { max-width: 720px; }
 .wallet-settings h2 { display: flex; gap: 10px; align-items: center; }
 .wallet-settings .about-grid { margin: 18px 0; }
@@ -250,17 +222,12 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
 .pending-transaction p { margin-top: 0; }
 .registered-token { font-size: 10px; align-self: center; color: var(--green); }
 @media (max-width: 590px) {
-  .app-header { align-items: flex-start; gap: 12px; }
-  .wallet-header { flex-wrap: wrap; justify-content: flex-end; gap: 7px; max-width: 58%; }
-  .wallet-header .token-logo { width: 25px; height: 25px; }
-  .wallet-header .button { flex-basis: 100%; margin: 2px 0 0; }
-  .balance { font-size: 17px; }
   .row-actions { flex-wrap: wrap; justify-content: flex-end; }
 }
 .rating-recipient { margin: 10px 0 0; overflow-wrap: anywhere; }
 
 .reserved-balance { font-size: 9px; color: var(--muted); text-align: right; line-height: 1.5; overflow-wrap: anywhere; }
-.rating-session-card { padding: 17px; border: 1px solid #cbd8bf; border-radius: 5px; background: #edf2e6; margin-bottom: 24px; }
+.rating-session-card { padding: 17px; border: 1px solid #cbd8bf; border-radius: 5px; background: #edf2e6; margin-top: 24px; }
 .rating-session-card h2 { font-size: 13px; margin: 0; font-weight: 500; }
 .rating-session-card .section-line > span { text-align: right; font-size: 9px; letter-spacing: 0; }
 .rating-session-card .session-total { font-size: 16px; color: var(--ink); margin: 13px 0 5px; }

@@ -91,7 +91,6 @@ class Client:
 
     def connect(self, other):
         settings = self.state()['settings']
-        settings['display_name'] = self.name
         settings['bootstrap_peers'] = [f'/ip4/127.0.0.1/tcp/{other.ports[1]}/p2p/{other.identity}']
         self.request('settings', settings)
 

@@ -25,7 +25,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-const TOPIC: &str = "clipcrop/catalog/1";
+const TOPIC: &str = "clipcrop/catalog/2";
 const MAX_WIRE: usize = 128 * 1024;
 const MAX_SEEDED: usize = 100;
 const MAX_AUTHORS: usize = 2048;
@@ -73,7 +73,6 @@ pub enum PeerEvent {
     },
     Presence {
         peer: String,
-        name: String,
         seeded: Vec<String>,
         permanent: Vec<String>,
         wallet: Option<String>,
@@ -97,7 +96,6 @@ impl PeerHandle {
         &self,
         clips: Vec<Clip>,
         seeded: Vec<String>,
-        name: String,
         torrent_port: u16,
         permanent: Vec<String>,
         wallet: Option<String>,
@@ -111,7 +109,6 @@ impl PeerHandle {
         self.send(Command::Announce(Snapshot {
             clips,
             seeded,
-            name,
             torrent_port,
             permanent,
             wallet,
@@ -157,7 +154,6 @@ impl PeerHandle {
 struct Snapshot {
     clips: Vec<Clip>,
     seeded: Vec<String>,
-    name: String,
     torrent_port: u16,
     permanent: Vec<String>,
     wallet: Option<String>,
@@ -178,7 +174,6 @@ enum WireMessage {
         clip: Clip,
     },
     Presence {
-        name: String,
         seeded: Vec<String>,
         torrent_port: u16,
         #[serde(default)]
@@ -310,14 +305,12 @@ fn validate_wire(wire: &WireMessage) -> bool {
     match wire {
         WireMessage::Advert { clip } => clip.validate().is_ok(),
         WireMessage::Presence {
-            name,
             seeded,
             torrent_port,
             permanent,
             wallet,
         } => {
-            name.len() <= 96
-                && seeded.len() <= MAX_SEEDED
+            seeded.len() <= MAX_SEEDED
                 && *torrent_port != 0
                 && seeded.iter().all(|id| valid_id(id))
                 && seeded.iter().collect::<HashSet<_>>().len() == seeded.len()
@@ -348,7 +341,6 @@ fn broadcast(swarm: &mut Swarm<Behaviour>, topic: &gossipsub::IdentTopic, snapsh
         return;
     }
     let presence = WireMessage::Presence {
-        name: snapshot.name.chars().take(64).collect(),
         seeded: snapshot.seeded.clone(),
         torrent_port: snapshot.torrent_port,
         permanent: snapshot.permanent.clone(),
@@ -372,14 +364,12 @@ fn broadcast_changes(
     if previous.seeded != current.seeded
         || previous.permanent != current.permanent
         || previous.wallet != current.wallet
-        || previous.name != current.name
         || previous.torrent_port != current.torrent_port
     {
         publish(
             swarm,
             topic,
             &WireMessage::Presence {
-                name: current.name.chars().take(64).collect(),
                 seeded: current.seeded.clone(),
                 torrent_port: current.torrent_port,
                 permanent: current.permanent.clone(),
@@ -521,9 +511,9 @@ async fn run(
                     let Some(author) = message.source else { continue; };
                     match wire.expect("validated wire") {
                         WireMessage::Advert { clip } => { let _ = events.try_send(PeerEvent::Advert { peer: author.to_string(), clip }); },
-                        WireMessage::Presence { name, seeded, torrent_port, permanent, wallet } => {
+                        WireMessage::Presence { seeded, torrent_port, permanent, wallet } => {
                             let torrent_addr = peer_ips.get(&author).map(|ip| SocketAddr::new(*ip, torrent_port));
-                            let _ = events.try_send(PeerEvent::Presence { peer: author.to_string(), name, seeded, permanent, wallet, torrent_addr });
+                            let _ = events.try_send(PeerEvent::Presence { peer: author.to_string(), seeded, permanent, wallet, torrent_addr });
                         },
                         WireMessage::Receipt { receipt } => { let _ = events.try_send(PeerEvent::Receipt(receipt)); },
                     }
@@ -546,21 +536,18 @@ mod tests {
     fn presence_is_bounded_and_cannot_duplicate_seeder_identity() {
         let id = "a".repeat(64);
         assert!(validate_wire(&WireMessage::Presence {
-            name: "Alice".into(),
             seeded: vec![id.clone()],
             torrent_port: 42832,
             permanent: vec![],
             wallet: None
         }));
         assert!(!validate_wire(&WireMessage::Presence {
-            name: "Alice".into(),
             seeded: vec![id.clone(), id],
             torrent_port: 42832,
             permanent: vec![],
             wallet: None
         }));
         assert!(!validate_wire(&WireMessage::Presence {
-            name: "Alice".into(),
             seeded: vec!["../evil".into()],
             torrent_port: 42832,
             permanent: vec![],
@@ -572,7 +559,6 @@ mod tests {
     fn permanent_seeds_must_be_available_and_wallet_announcements_are_bounded() {
         let id = "a".repeat(64);
         let valid = WireMessage::Presence {
-            name: "Seeder".into(),
             seeded: vec![id.clone()],
             permanent: vec![id.clone()],
             wallet: Some("0x1111111111111111111111111111111111111111".into()),
@@ -621,35 +607,31 @@ mod tests {
         .await
         .unwrap();
         alice
-            .announce(vec![], vec![], "Alice".into(), 14001, vec![], None)
+            .announce(vec![], vec![], 14001, vec![], None)
             .await
             .unwrap();
         let (bob, mut bob_events) = start(identity::Keypair::generate_ed25519(), 0, vec![])
             .await
             .unwrap();
-        bob.announce(vec![], vec![], "Bob".into(), 14002, vec![], None)
+        bob.announce(vec![], vec![], 14002, vec![], None)
             .await
             .unwrap();
         bob.dial(address).await.unwrap();
         let presence = tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 if let Some(PeerEvent::Presence {
-                    peer,
-                    name,
-                    torrent_addr,
-                    ..
+                    peer, torrent_addr, ..
                 }) = bob_events.recv().await
                 {
                     if peer == alice.peer_id {
-                        break (name, torrent_addr);
+                        break torrent_addr;
                     }
                 }
             }
         })
         .await
         .unwrap();
-        assert_eq!(presence.0, "Alice");
-        assert_eq!(presence.1, Some("127.0.0.1:14001".parse().unwrap()));
+        assert_eq!(presence, Some("127.0.0.1:14001".parse().unwrap()));
         alice.shutdown().await.unwrap();
         bob.shutdown().await.unwrap();
     }

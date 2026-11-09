@@ -38,12 +38,14 @@ Release builds support Apple Silicon macOS and Linux x86-64. See [release publis
 
 ## The four screens
 
-After wallet setup or startup unlock, the app opens in a compact, resizable window with four menu rows: Upload, Rate, Roll, and Settings. Your wallet’s ✨ balance stays in the top-right corner, with peer status and your display name in the bottom corners. Use **← Menu** or Escape to return to the main menu. Rating sessions start when you enter Rate and end when you leave it.
+After wallet setup or startup unlock, the app opens in a compact, resizable window with four menu rows: Upload, Rate, Roll, and Settings. Your wallet’s ✨ balance stays in the bottom-right corner, with peer status in the bottom-left. Click the balance to open wallet details. Use **← Menu** or Escape to return to the main menu. Rating sessions start when you enter Rate and end when you leave it.
 
 - **Seed / upload:** select or drop MP4 or WebM videos. Files pass validation before they enter your library. New clips become torrents and begin seeding automatically. Uploading the exact same bytes joins the same deterministic torrent, even if the original filename differs. You can keep up to 100 permanent clips. Removing a clip stops its permanent seeding. Each clip shows its average rating out of 9 and rating count. Sort by recency or rating. Register your seeder wallet in Settings to receive rewards for your permanently seeded clips.
 - **Rate:** videos loop until you press a number from 0–9 or use a rating button. A positive number queues that many ✨ as your cost. The app calculates rewards for eligible permanent seeders locally, uses your unused rating credit, and automatically mints any remaining shortfall. Queue up to 100 ratings and 1,000 seeder payments, then settle them together with one wallet-approved transaction. Zero records the clip as watched without paying anyone. Positive ratings stay unpaid and private until the session batch settles. Positive ratings temporarily seed the watched clip for the rest of the rating session; leaving Rate ends those temporary seeds. You cannot rate your own permanently seeded clips or rate the same content twice.
 - **Roll:** commit ✨ for a verified multiplier from 0 through 9. After the future drand round is published, submit its proof to settle. A 0 burns the wager and plays no clip; a 1 returns the stake; 2–9 return the stake and mint the profit. Total payout is `wager × multiplier`. Positive results play one clip from that rating tier, without looping. Previously watched clips and clips in your own library are eligible.
-- **Settings:** inspect the token network, contract, wallet, and unconfirmed transactions; edit your peer display name, playback mute/volume, automatic prefetch, and saved bootstrap peer addresses. Network details show the local peer identity and connection addresses.
+- **Settings:** inspect the token network, contract, wallet, and unconfirmed transactions; edit saved bootstrap peer addresses. Network details show the local peer identity and connection addresses.
+
+Videos start with sound on. Use the video player's controls to adjust volume or mute.
 
 Rate prefetch starts with the app. Its downloads run one at a time, in a shuffled order, and completed files are validated before they become playable. The app targets ten unwatched ready clips and fills vacancies as you rate. It can only fill that buffer when the connected network has enough eligible clips and reachable seeders. Pending queue downloads do not announce themselves as seeders before completion. Roll prepares its result through a separate download session and cache, with the same validation, so Rate cleanup cannot remove a playing roll clip.
 
@@ -58,6 +60,8 @@ Rate prefetch starts with the app. Its downloads run one at a time, in a shuffle
 | Permanent library | 100 clips per identity |
 
 File limits are defined by the authoritative constants in `src/core.rs` and supplied through the local API for the interface to display. Validation, upload limits, and probing use that policy. Changing network-wide limits should also change the protocol version: peers must agree on what they accept.
+
+The current peer protocol uses `clipcrop/catalog/2` and identifies peers by their peer IDs. Peers on the older display-name protocol must update to exchange clips and ratings with this version.
 
 Validation checks real bytes and decoded frames with `ffprobe`, including container, streams, dimensions, frame timestamps, and duration. Only one video stream and at most one audio stream are accepted; attachments, subtitles, data streams, and unknown codecs are rejected. Network downloads receive the same checks as uploads. SHA-256 verifies content identity, and canonical single-file torrent metadata is checked before downloading. Paths and filenames from peers are never used as arbitrary filesystem destinations.
 

@@ -89,11 +89,12 @@ with tempfile.TemporaryDirectory(prefix='clipclub-package-') as folder:
             if attempt == 0:
                 saved_identity = state['profile_id']
                 settings = state['settings']
-                settings['display_name'] = 'Package Smoke Check'
+                saved_peers = [f'/ip4/127.0.0.1/tcp/9/p2p/{saved_identity}']
+                settings['bootstrap_peers'] = saved_peers
                 request('settings', settings)
             else:
                 assert state['profile_id'] == saved_identity
-                assert state['settings']['display_name'] == 'Package Smoke Check'
+                assert state['settings']['bootstrap_peers'] == saved_peers
             for payload in ({'wager':1}, {'wager':1,'multiplier':9}, {'transaction_hash':'invalid'}):
                 try:
                     request('roll', payload)
