@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local, real-process mesh/BitTorrent/HTTP integration test. No hosted services.
-Usage: python3 scripts/integration.py [path/to/clipclub] [path/to/ffmpeg]
+Usage: python3 scripts/integration.py [path/to/clipclub] [path/to/ffmpeg] [--diagnostics-only]
 """
 import hashlib
 import http.client
@@ -20,6 +20,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent.parent
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / 'target/debug/clipclub').resolve()
 FFMPEG = Path(sys.argv[2] if len(sys.argv) > 2 else ROOT / '.build/ffmpeg').resolve()
+DIAGNOSTICS_ONLY = '--diagnostics-only' in sys.argv[3:]
 WORK = Path(tempfile.mkdtemp(prefix='clipcrop-e2e-'))
 PROCESSES = []
 ENVIRONMENT = dict(os.environ)
@@ -126,6 +127,25 @@ try:
         assert crypto['balance_units'] == '0' and crypto['total_supply_units'] == '0'
         assert crypto['wallet'] is None and crypto['contract'] is None
         assert 'balance' not in client.state(), 'Legacy points were exposed as spendable money'
+    # In-app diagnostics use the same local-session protection as other APIs.
+    unauthenticated = urllib.request.Request(alice.url + '/api/diagnostics', data=b'{}', headers={'Content-Type':'application/json'})
+    assert_http_error(lambda: urllib.request.urlopen(unauthenticated), 'Invalid local session')
+    assert_http_error(lambda: alice.request('diagnostics', {'peer_ip':'example.com'}))
+    assert_http_error(lambda: alice.request('diagnostics', {'peer_ip':'127.0.0.1', 'torrent_port':0}))
+    report = alice.request('diagnostics', {'peer_ip':'127.0.0.1', 'p2p_port':bob.ports[1], 'torrent_port':bob.ports[2]})
+    assert report['generated_at_ms'] > 0 and report['summary'] and report['checks']
+    assert alice.identity in report['report'] and str(bob.ports[2]) in report['report']
+    assert alice.token not in report['report'] and str(alice.root) not in report['report']
+    assert any(row['status'] == 'pass' and str(bob.ports[2]) in row['name'] for row in report['checks']), report
+    # The checker must report an unreachable target separately from the working mesh.
+    blocked_port = free_port()
+    blocked = alice.request('diagnostics', {'peer_ip':'127.0.0.1', 'p2p_port':bob.ports[1], 'torrent_port':blocked_port})
+    assert any(row['status'] == 'fail' and str(blocked_port) in row['name'] for row in blocked['checks']), blocked
+    assert any(row['name'] == 'Video transfer finding' for row in blocked['checks']), blocked
+    if DIAGNOSTICS_ONLY:
+        print('PASS: real-process diagnostics,local-session protection,input validation,reachable peer ports,unreachable video port,and report privacy.')
+        print('Integration logs:', WORK)
+        sys.exit(0)
     wait_for(lambda: any(peer['id'] == bob.identity for peer in alice.state()['peers']) and any(peer['id'] == alice.identity for peer in bob.state()['peers']), 'automatic mutual discovery')
     assert_http_error(lambda: urllib.request.urlopen(alice.url + '/api/state'), 'Invalid local session')
     bad = urllib.request.Request(alice.url + '/api/state', headers={'x-clipcrop-token':alice.token, 'Origin':'https://untrusted.example'})
@@ -244,7 +264,7 @@ try:
     # Duplicate-profile lock prevents simultaneous spending from one profile.
     duplicate = subprocess.run([str(BINARY),'--headless','--data-dir',str(bob.root)], env=ENVIRONMENT, capture_output=True, text=True, timeout=5)
     assert duplicate.returncode != 0 and 'already open' in duplicate.stderr
-    print('PASS: real three-peer mesh,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,free signed skips,dedup,seeding,session cleanup,restart,portable profile relocation,no initial token grants,no paid ratings without chain payment,no local RNG rolls,skip gossip,and profile lock.')
+    print('PASS: real three-peer mesh,in-app diagnostics,13 uploads,MP4/WebM,hostile-file rejection,10-clip refill,range playback,free signed skips,dedup,seeding,session cleanup,restart,portable profile relocation,no initial token grants,no paid ratings without chain payment,no local RNG rolls,skip gossip,and profile lock.')
     print('Integration logs:', WORK)
 finally:
     for client in reversed(PROCESSES):

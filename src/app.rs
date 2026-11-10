@@ -1,6 +1,7 @@
 use crate::{
     core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Store},
     crypto::{ChainRoll, Crypto, SeederDistribution, SeederRecipient},
+    diagnostics::{self, DiagnosticContext, DiagnosticReport, DiagnosticRequest},
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
     torrent::{self, PreparedTorrent, TorrentEngine},
@@ -32,6 +33,7 @@ pub struct App {
     downloader: TorrentEngine,
     roll_downloader: TorrentEngine,
     roll_preparation: Mutex<()>,
+    diagnostics_running: Mutex<()>,
     probe: PathBuf,
     runtime: Mutex<Runtime>,
     /// Serialize user mutations across disk and network operations.
@@ -166,6 +168,7 @@ impl App {
             downloader,
             roll_downloader,
             roll_preparation: Mutex::new(()),
+            diagnostics_running: Mutex::new(()),
             probe,
             runtime: Mutex::new(Runtime::default()),
             mutation: Mutex::new(()),
@@ -266,6 +269,49 @@ impl App {
     async fn notice(&self, message: &str) {
         self.runtime.lock().await.notice = Some(message.to_owned());
         eprintln!("{message}");
+    }
+    pub async fn diagnostics(&self, request: DiagnosticRequest) -> Result<DiagnosticReport> {
+        let _running = self.diagnostics_running.try_lock().map_err(|_| {
+            anyhow::anyhow!(
+                "Diagnostics are already running. Wait for the current tests to finish."
+            )
+        })?;
+        let context = {
+            // Copy local observations before opening test connections. Network
+            // checks must not hold the locks used by playback or peer events.
+            let store = self.store.lock().await;
+            let runtime = self.runtime.lock().await;
+            let present: Vec<_> = runtime
+                .peers
+                .values()
+                .filter(|peer| peer.seen.elapsed() < Duration::from_secs(65))
+                .collect();
+            DiagnosticContext {
+                peer_id: self.mesh.peer_id.clone(),
+                p2p_port: self.p2p_port,
+                torrent_port: self.torrent_port,
+                local_seeded_clips: runtime
+                    .permanent
+                    .keys()
+                    .chain(runtime.temporary.keys())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                catalog_clips: store.data.catalog.len(),
+                ready_clips: runtime.ready.len(),
+                connected_presence: present.len(),
+                peer_video_endpoints: present.iter().filter_map(|peer| peer.endpoint).collect(),
+                downloading: runtime.downloading.as_ref().map(|(_, handle)| {
+                    let stats = handle.stats();
+                    (stats.progress_bytes, stats.total_bytes)
+                }),
+                recent_download_failures: runtime
+                    .failed
+                    .values()
+                    .filter(|when| when.elapsed() < Duration::from_secs(120))
+                    .count(),
+            }
+        };
+        diagnostics::run(context, self.mesh.diagnostics().await, request).await
     }
     pub async fn announce(&self) {
         let wallet = self.crypto.selected_wallet().await;

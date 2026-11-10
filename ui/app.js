@@ -8,8 +8,11 @@ let rollBusy=false, rollMediaKey='', rollStartedKey='';
 let updateStatus=null, updateBusy=false, updateOpening=false, updateNoticeVersion=null, updateTask=null;
 let refreshVersion=0;
 let navigationQueue=Promise.resolve(),sessionToggleBusy=false,ratingRecoveryState=null;
-async function api(path, body, method='POST') {
+let diagnosticsResult=null,diagnosticsBusy=false,diagnosticsError='',diagnosticsPortsReady=false;
+const diagnosticsPortEdits=new Set();
+async function api(path, body, method='POST', signal) {
   const options={method,headers:{'x-clipcrop-token':token}};
+  if(signal)options.signal=signal;
   if(body instanceof FormData) options.body=body;
   else if(body!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
   const response=await fetch(`/api/${path}`,options);
@@ -379,7 +382,7 @@ function queueNavigation(operation){
   return navigationQueue;
 }
 function navigate(next){
-  if(!['home','seed','rate','roll','settings'].includes(next))next='home';
+  if(!['home','seed','rate','roll','settings','diagnostics'].includes(next))next='home';
   return queueNavigation(async()=>{
     if(walletStartupRequired())return;
     if(next===page)return;
@@ -388,7 +391,7 @@ function navigate(next){
     if(document.body)document.body.dataset.page=page;
     document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
     $('back-home').hidden=page==='home';
-    $('breadcrumb').textContent={home:'Home',seed:'Upload',rate:'Rate',roll:'Roll',settings:'Settings'}[page];
+    $('breadcrumb').textContent={home:'Home',seed:'Upload',rate:'Rate',roll:'Roll',settings:'Settings',diagnostics:'Diagnostics'}[page];
     if(page!=='rate')$('player').pause();
     if(page!=='roll')$('roll-player').pause();
     const focusTarget=document.querySelector(page==='home'?`[data-page="${previous}"]`:`#page-${page}`);
@@ -404,8 +407,74 @@ function navigate(next){
     await refresh();
   });
 }
+function renderDiagnostics(){
+  if(state&&!diagnosticsPortsReady){
+    for(const [id,port] of [['diagnostics-p2p-port',state.p2p_port||42931],['diagnostics-torrent-port',state.torrent_port||42932]]){
+      if(!diagnosticsPortEdits.has(id))$(id).value=String(port);
+    }
+    diagnosticsPortsReady=true;
+  }
+  for(const id of ['diagnostics-peer','diagnostics-p2p-port','diagnostics-torrent-port','run-diagnostics'])$(id).disabled=diagnosticsBusy;
+  $('run-diagnostics').textContent=diagnosticsBusy?'Testing…':'Run tests';
+  $('diagnostics-form').setAttribute?.('aria-busy',String(diagnosticsBusy));
+  $('diagnostics-status').textContent=diagnosticsBusy?'Checking discovery and TCP connectivity…':diagnosticsError?diagnosticsResult?'Tests could not complete. The previous report is shown below.':'Tests could not complete.':diagnosticsResult?.summary||'Ready to test.';
+  $('diagnostics-error').hidden=!diagnosticsError;$('diagnostics-error').textContent=diagnosticsError;
+  $('diagnostics-results').hidden=!diagnosticsResult;
+  $('copy-diagnostics').disabled=!diagnosticsResult;$('save-diagnostics').disabled=!diagnosticsResult;
+  if(!diagnosticsResult)return;
+  const generated=new Date(diagnosticsResult.generated_at_ms);
+  $('diagnostics-time').textContent=Number.isFinite(generated.getTime())?generated.toLocaleString():'';
+  const labels={pass:'Passed',warning:'Check',fail:'Failed',info:'Info'};
+  const markup=diagnosticsResult.checks.map(check=>{
+    const status=Object.hasOwn(labels,check.status)?check.status:'info';
+    return `<li class="diagnostics-check diagnostics-${status}"><span class="diagnostics-badge">${labels[status]}</span><div><h3>${esc(check.name)}</h3><p>${esc(check.detail)}</p></div></li>`;
+  }).join('');
+  if($('diagnostics-checks').innerHTML!==markup)$('diagnostics-checks').innerHTML=markup;
+  if($('diagnostics-report').value!==diagnosticsResult.report)$('diagnostics-report').value=diagnosticsResult.report;
+}
+async function runDiagnostics(event){
+  event?.preventDefault();if(diagnosticsBusy)return;
+  diagnosticsError='';
+  const peer=$('diagnostics-peer').value.trim(),body={};
+  if(peer){
+    const parts=peer.split('.');
+    if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255)){
+      diagnosticsError='Enter the other device’s IPv4 address, such as 192.168.1.86.';renderDiagnostics();$('diagnostics-peer').focus?.();return;
+    }
+    body.peer_ip=parts.map(Number).join('.');
+  }
+  for(const [key,id] of [['p2p_port','diagnostics-p2p-port'],['torrent_port','diagnostics-torrent-port']]){
+    const text=$(id).value.trim(),number=Number(text);
+    if(!/^\d+$/.test(text)||!Number.isInteger(number)||number<1||number>65535){
+      diagnosticsError='Use TCP port numbers between 1 and 65535.';renderDiagnostics();$(id).focus?.();return;
+    }
+    body[key]=number;
+  }
+  diagnosticsBusy=true;renderDiagnostics();
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),25000);
+  try{
+    const result=await api('diagnostics',body,'POST',controller.signal);
+    if(typeof result.report!=='string'||!Array.isArray(result.checks))throw Error('The client returned an incomplete diagnostics report.');
+    diagnosticsResult=result;
+  }catch(error){diagnosticsError=error.name==='AbortError'?'Tests took too long. Keep ClipClub open and try again.':error.message;}
+  finally{clearTimeout(timeout);diagnosticsBusy=false;renderDiagnostics();}
+}
+async function copyDiagnostics(){
+  if(!diagnosticsResult)return;
+  try{await navigator.clipboard.writeText(diagnosticsResult.report);toast('Diagnostics report copied.');}
+  catch{$('diagnostics-report').focus();$('diagnostics-report').select();toast('Report selected. Copy it with your keyboard or context menu.');}
+}
+function saveDiagnostics(){
+  if(!diagnosticsResult)return;
+  try{
+    const blob=new Blob([diagnosticsResult.report],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+    const generated=new Date(diagnosticsResult.generated_at_ms),stamp=Number.isFinite(generated.getTime())?generated.toISOString().replace(/[:.]/g,'-'):'report';
+    link.href=url;link.download=`clipclub-diagnostics-${stamp}.txt`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch{toast('Could not save the report. Use Copy report or select the report text.');}
+}
 function render(){
   if(!state)return;
+  renderDiagnostics();
   if(state.notice&&state.notice!==lastNotice){lastNotice=state.notice;toast(state.notice);}
   renderWallet();
   $('seed-count').textContent=state.library.length;$('ready-count').textContent=state.queue.length;$('queue-total').textContent=state.queue.length;
@@ -648,5 +717,9 @@ $('install-update').addEventListener('click',installUpdate);
 $('download-update').addEventListener('click',()=>openUpdate('download'));
 $('update-release').addEventListener('click',()=>openUpdate('release'));
 $('listen-addresses').addEventListener('click',event=>{const button=event.target.closest('[data-address]');if(button)copy(button.dataset.address);});
+$('diagnostics-form').addEventListener('submit',runDiagnostics);
+$('copy-diagnostics').addEventListener('click',copyDiagnostics);
+$('save-diagnostics').addEventListener('click',saveDiagnostics);
+for(const id of ['diagnostics-p2p-port','diagnostics-torrent-port'])$(id).addEventListener('input',()=>diagnosticsPortEdits.add(id));
 window.addEventListener('pagehide',()=>{$('roll-player').pause();if(state?.session)fetch('/api/session',{method:'POST',headers:{'x-clipcrop-token':token,'Content-Type':'application/json'},body:'{"active":false}',keepalive:true}).catch(()=>{});});
 (async()=>{await refresh();initialized=true;setInterval(refresh,1500);})();

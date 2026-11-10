@@ -54,6 +54,10 @@ pub async fn serve(
         .route("/style.css", get(css))
         .route("/joah.png", get(logo_png))
         .route("/api/state", get(status))
+        .route(
+            "/api/diagnostics",
+            post(diagnostics).layer(DefaultBodyLimit::max(1_024)),
+        )
         .route("/api/crypto", get(crypto_status))
         .route("/api/crypto/transaction", post(crypto_transaction))
         .route("/api/crypto/pending", post(crypto_pending))
@@ -169,6 +173,12 @@ async fn css() -> impl IntoResponse {
 }
 async fn status(State(state): State<HttpState>) -> Json<Value> {
     Json(state.app.state().await)
+}
+async fn diagnostics(
+    State(state): State<HttpState>,
+    Json(input): Json<crate::diagnostics::DiagnosticRequest>,
+) -> Result<Json<crate::diagnostics::DiagnosticReport>, ApiError> {
+    Ok(Json(state.app.diagnostics(input).await?))
 }
 async fn logo_png() -> impl IntoResponse {
     (

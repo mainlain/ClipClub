@@ -5,6 +5,7 @@
 mod app;
 mod core;
 mod crypto;
+mod diagnostics;
 mod discovery;
 mod http;
 mod media;

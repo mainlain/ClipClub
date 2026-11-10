@@ -21,14 +21,14 @@ use librqbit::dht::{DhtBuilder, DhtConfig, Id20, RequestPeersStream};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::Write,
     net::{IpAddr, SocketAddr},
     path::Path,
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 const TOPIC: &str = "clipcrop/catalog/2";
@@ -37,6 +37,41 @@ const MAX_SEEDED: usize = 100;
 const MAX_AUTHORS: usize = 2048;
 const REFRESH: Duration = Duration::from_secs(20);
 const DISCOVERY_TICK: Duration = Duration::from_secs(5);
+const MAX_DIAGNOSTIC_ERRORS: usize = 16;
+const MAX_DIAGNOSTIC_ENDPOINTS: usize = 256;
+
+/// A bounded, in-memory view of the running mesh. These observations are not
+/// proof of multicast delivery or of a remote application's video availability.
+#[derive(Clone, Debug, Default)]
+pub struct PeerDiagnostics {
+    pub mdns_requested: bool,
+    pub mdns_enabled: bool,
+    pub mdns_endpoints: Vec<String>,
+    pub authenticated_peers: Vec<String>,
+    pub subscribed_peers: usize,
+    pub listen_addresses: Vec<String>,
+    pub internet_discovery_running: bool,
+    pub received_adverts: u64,
+    pub received_presence: u64,
+    pub rejected_messages: u64,
+    pub recent_dial_errors: Vec<DiagnosticDialError>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiagnosticDialError {
+    pub at_ms: u64,
+    pub detail: String,
+}
+
+fn remember_dial_error(errors: &mut VecDeque<DiagnosticDialError>, detail: String) {
+    if errors.len() == MAX_DIAGNOSTIC_ERRORS {
+        errors.pop_front();
+    }
+    errors.push_back(DiagnosticDialError {
+        at_ms: crate::core::current_time_ms(),
+        detail: detail.chars().take(512).collect(),
+    });
+}
 
 /// Identity lives beside portable state; moving the folder preserves it.
 /// Never silently replace an unreadable/corrupt identity with a new wallet.
@@ -143,6 +178,16 @@ impl PeerHandle {
         self.send(Command::Shutdown).await
     }
 
+    pub async fn diagnostics(&self) -> Result<PeerDiagnostics> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (reply, result) = oneshot::channel();
+            self.send(Command::Diagnostics(reply)).await?;
+            result.await.map_err(|_| anyhow!("Peer mesh has stopped"))
+        })
+        .await
+        .context("Peer mesh did not respond to diagnostics within three seconds")?
+    }
+
     async fn send(&self, command: Command) -> Result<()> {
         self.commands
             .send(command)
@@ -164,6 +209,7 @@ enum Command {
     Announce(Snapshot),
     Advert(Clip),
     Receipt(RatingReceipt),
+    Diagnostics(oneshot::Sender<PeerDiagnostics>),
     Shutdown,
 }
 
@@ -462,6 +508,11 @@ async fn run(
     discovery_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut internet: Option<InternetDiscovery> = None;
     let mut listen_port = None;
+    let mut mdns_endpoints = HashSet::<(PeerId, libp2p::Multiaddr)>::new();
+    let mut recent_dial_errors = VecDeque::new();
+    let mut received_adverts = 0_u64;
+    let mut received_presence = 0_u64;
+    let mut rejected_messages = 0_u64;
     loop {
         tokio::select! {
             command = commands.recv() => match command {
@@ -475,6 +526,39 @@ async fn run(
                 }
                 Some(Command::Advert(clip)) => publish(&mut swarm, &topic, &WireMessage::Advert { clip }),
                 Some(Command::Receipt(receipt)) => publish(&mut swarm, &topic, &WireMessage::Receipt { receipt }),
+                Some(Command::Diagnostics(reply)) => {
+                    let current_mdns: HashSet<_> = swarm.behaviour().mdns.as_ref()
+                        .map(|mdns| mdns.discovered_nodes().copied().take(MAX_DIAGNOSTIC_ENDPOINTS).collect())
+                        .unwrap_or_default();
+                    mdns_endpoints.retain(|(peer, _)| current_mdns.contains(peer));
+                    let mut endpoints: Vec<_> = mdns_endpoints.iter()
+                        .map(|(peer, address)| {
+                            let mut address = address.clone();
+                            if !address.iter().any(|part| matches!(part, Protocol::P2p(_))) {
+                                address.push(Protocol::P2p(*peer));
+                            }
+                            address.to_string()
+                        })
+                        .collect();
+                    endpoints.sort();
+                    let mut authenticated_peers: Vec<_> = swarm.connected_peers().map(ToString::to_string).collect();
+                    authenticated_peers.sort();
+                    let mut listen_addresses: Vec<_> = swarm.listeners().take(MAX_DIAGNOSTIC_ENDPOINTS).map(ToString::to_string).collect();
+                    listen_addresses.sort();
+                    let _ = reply.send(PeerDiagnostics {
+                        mdns_requested: options.local,
+                        mdns_enabled: swarm.behaviour().mdns.as_ref().is_some(),
+                        mdns_endpoints: endpoints,
+                        authenticated_peers,
+                        subscribed_peers: subscribed.len(),
+                        listen_addresses,
+                        internet_discovery_running: internet.is_some(),
+                        received_adverts,
+                        received_presence,
+                        rejected_messages,
+                        recent_dial_errors: recent_dial_errors.iter().cloned().collect(),
+                    });
+                },
             },
             _ = timer.tick() => {
                 broadcast(&mut swarm, &topic, &snapshot);
@@ -493,7 +577,9 @@ async fn run(
                     discovery.refresh_local(mdns.discovered_nodes().copied());
                 }
                 for address in discovery.due() {
-                    let _ = swarm.dial(address);
+                    if let Err(error) = swarm.dial(address.clone()) {
+                        remember_dial_error(&mut recent_dial_errors, format!("{address}: {error}"));
+                    }
                 }
             },
             endpoint = async {
@@ -555,6 +641,9 @@ async fn run(
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     for (peer_id, address) in list.into_iter().take(128) {
+                        if mdns_endpoints.len() < MAX_DIAGNOSTIC_ENDPOINTS {
+                            mdns_endpoints.insert((peer_id, address.clone()));
+                        }
                         discovery.remember(address.clone(), Some(peer_id));
                         if swarm.is_connected(&peer_id) {
                             discovery.connected(peer_id, &address);
@@ -563,6 +652,7 @@ async fn run(
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                     for (peer_id, address) in list {
+                        mdns_endpoints.remove(&(peer_id, address.clone()));
                         discovery.forget(&address, peer_id);
                     }
                 },
@@ -573,6 +663,11 @@ async fn run(
                         // recipient can receive our topic. A raw transport event
                         // is too early and used to launch a second replay task.
                         let _ = events.try_send(PeerEvent::Connected(peer_id.to_string()));
+                    }
+                },
+                SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Unsubscribed { peer_id, topic: remote_topic })) => {
+                    if remote_topic == topic.hash() {
+                        subscribed.remove(&peer_id);
                     }
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
@@ -590,16 +685,27 @@ async fn run(
                     } else { false };
                     let result = if valid { gossipsub::MessageAcceptance::Accept } else { gossipsub::MessageAcceptance::Reject };
                     let _ = swarm.behaviour_mut().gossip.report_message_validation_result(&message_id, &propagation_source, result);
-                    if !valid { continue; }
+                    if !valid {
+                        rejected_messages = rejected_messages.saturating_add(1);
+                        continue;
+                    }
                     let Some(author) = message.source else { continue; };
                     match wire.expect("validated wire") {
-                        WireMessage::Advert { clip } => { let _ = events.try_send(PeerEvent::Advert { peer: author.to_string(), clip }); },
+                        WireMessage::Advert { clip } => {
+                            received_adverts = received_adverts.saturating_add(1);
+                            let _ = events.try_send(PeerEvent::Advert { peer: author.to_string(), clip });
+                        },
                         WireMessage::Presence { seeded, torrent_port, permanent, wallet } => {
+                            received_presence = received_presence.saturating_add(1);
                             let torrent_addr = peer_ips.get(&author).map(|ip| SocketAddr::new(*ip, torrent_port));
                             let _ = events.try_send(PeerEvent::Presence { peer: author.to_string(), seeded, permanent, wallet, torrent_addr });
                         },
                         WireMessage::Receipt { receipt } => { let _ = events.try_send(PeerEvent::Receipt(receipt)); },
                     }
+                },
+                SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                    let peer = peer_id.map(|peer| peer.to_string()).unwrap_or_else(|| "unknown peer".into());
+                    remember_dial_error(&mut recent_dial_errors, format!("{peer}: {error}"));
                 },
                 // Stale/unreachable discovery results are normal. Candidate
                 // retries are bounded and do not overwrite application notices.

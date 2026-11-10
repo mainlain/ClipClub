@@ -122,6 +122,30 @@ details summary:hover { color: var(--orange); }
 .row-actions button:hover { color: var(--orange); }
 .upload-feedback { padding: 12px; border-radius: 4px; margin-top: 14px; background: #e6eddc; color: #596d49; font-size: 12px; overflow-wrap: anywhere; }
 .network-settings { max-width: 720px; }
+.diagnostics-page { max-width: 720px; }
+.diagnostics-page > h1 { font: 400 25px Georgia; margin: 0 0 16px; }
+.diagnostics-page > p { font-size: 12px; }
+.diagnostics-page > .field-help { font-size: 11px; }
+.diagnostics-form { border: 1px solid var(--line); border-radius: 5px; padding: 4px 18px 18px; margin-top: 22px; }
+.diagnostics-form > input { max-width: 330px; }
+.diagnostics-port-options { margin-top: 18px; }
+.diagnostics-ports { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 420px; }
+.diagnostics-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 20px; }
+#diagnostics-status { flex: 1; min-width: 160px; font-size: 11px; color: var(--muted); line-height: 1.7; }
+.diagnostics-error { font-size: 11px; color: #a34427; overflow-wrap: anywhere; margin-bottom: 0; }
+.diagnostics-results { margin-top: 28px; }
+.diagnostics-results h2 { font-size: 13px; font-weight: 500; margin: 0; }
+.diagnostics-results .section-line { flex-wrap: wrap; }
+.diagnostics-checks { list-style: none; padding: 0; margin: 16px 0 0; }
+.diagnostics-check { display: flex; align-items: baseline; gap: 14px; border-top: 1px solid var(--line); padding: 15px 0; }
+.diagnostics-check > div { min-width: 0; }
+.diagnostics-check h3 { font-size: 12px; font-weight: 500; margin: 0; }
+.diagnostics-check p { font-size: 11px; margin: 6px 0 0; overflow-wrap: anywhere; white-space: pre-line; }
+.diagnostics-badge { min-width: 48px; font-size: 10px; font-weight: 500; color: var(--muted); }
+.diagnostics-pass .diagnostics-badge { color: var(--green); }
+.diagnostics-fail .diagnostics-badge { color: #a34427; }
+.diagnostics-warning .diagnostics-badge { color: #91622e; }
+#diagnostics-report { font-size: 11px; line-height: 1.6; }
 .settings-section { padding: 22px 0; border-top: 1px solid var(--line); }
 .settings-section h2 { font-size: 13px; font-weight: 500; margin: 0 0 18px; }
 .app-updates { max-width: 720px; }

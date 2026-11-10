@@ -8,9 +8,9 @@ for(const element of elements.values()){
   element.setAttribute=function(name,value){this[name]=value;};
   element.focus=function(){focused=this.id;};
 }
-const menuButtons=new Map(['seed','rate','roll','settings'].map(page=>[page,{setAttribute(){},focus(){focused=`menu-${page}`;}}]));
+const menuButtons=new Map(['seed','rate','roll','settings','diagnostics'].map(page=>[page,{setAttribute(){},focus(){focused=`menu-${page}`;}}]));
 const calls=[];
-const context=vm.createContext({document:{body:{dataset:{page:'home'}},getElementById(id){assert.ok(elements.has(id),id);return elements.get(id);},querySelector(s){if(s.startsWith('meta'))return{content:'test-token'};if(s.startsWith('#'))return elements.get(s.slice(1))||null;const button=s.match(/^\[data-page="(\w+)"\]$/);return button?menuButtons.get(button[1]):null;},querySelectorAll(s){return s==='.page'?['home','seed','rate','roll','settings'].map(id=>elements.get('page-'+id)):[];},addEventListener(){}},window:{addEventListener(){},scrollTo(){}},fetch(url){calls.push(url);return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){}});
+const context=vm.createContext({document:{body:{dataset:{page:'home'}},getElementById(id){assert.ok(elements.has(id),id);return elements.get(id);},querySelector(s){if(s.startsWith('meta'))return{content:'test-token'};if(s.startsWith('#'))return elements.get(s.slice(1))||null;const button=s.match(/^\[data-page="(\w+)"\]$/);return button?menuButtons.get(button[1]):null;},querySelectorAll(s){return s==='.page'?['home','seed','rate','roll','settings','diagnostics'].map(id=>elements.get('page-'+id)):[];},addEventListener(){}},window:{addEventListener(){},scrollTo(){}},fetch(url){calls.push(url);return new Promise(()=>{});},FormData:class{},setTimeout(){},clearTimeout(){},setInterval(){}});
 vm.runInContext(fs.readFileSync('ui/app.js','utf8'),context);
 assert.equal(vm.runInContext('page',context),'home');
 assert.deepEqual(calls,['/api/state'],'startup must only load state, without opening a rating session');
@@ -20,7 +20,7 @@ vm.runInContext('state=fixture;initialized=true;',context);
 const sessions=[];
 context.fetch=async(url,options)=>{if(url==='/api/session'){fixture.session=JSON.parse(options.body).active;sessions.push(fixture.session);}return{ok:true,json:async()=>fixture};};
 (async()=>{
-  for(const page of ['seed','rate','roll','settings']){
+  for(const page of ['seed','rate','roll','settings','diagnostics']){
     await vm.runInContext(`navigate("${page}")`,context);
     assert.equal(focused,`page-${page}`,'entering a screen must focus its accessible region');
     assert.equal(elements.get(`page-${page}`).hidden,false);

@@ -110,7 +110,11 @@ The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Peers connec
 
 The portable application and Debian installation use the same networking code. Keep ClipClub open on both devices, check that Settings shows different peer IDs, and compare their versions. Local discovery uses IPv4 mDNS on UDP 5353, followed by a connection to the other device's peer TCP port. The BitTorrent TCP port is needed for video transfer. A device can receive a discovery announcement while a firewall still blocks the subsequent TCP connection.
 
-Run the diagnostic script on each Linux device, replacing the example address with the other device's Wi-Fi IPv4 address:
+Open **Main menu → Diagnostics → Run tests** on each device. The built-in report shows the running app's mDNS observations, authenticated mesh connections, local listener checks, clip readiness, and bounded TCP checks to observed peer endpoints. Enter the other device's Wi-Fi IPv4 address to test it even when discovery has no results; adjust the ports if that device uses custom ones. Use **Copy report** or **Save report** and compare both reports. A successful connection in one direction does not establish reachability in the other direction. The tests make no firewall or router changes.
+
+The Rate queue shows remote clips only after their video download and validation complete. Clip metadata can reach both devices over a single mesh connection while one device's video port remains unreachable, leaving clips ready on only one device.
+
+The standalone diagnostic script remains available on each Linux device, replacing the example address with the other device's Wi-Fi IPv4 address:
 
 ```sh
 python3 scripts/diagnose-discovery.py --peer 192.168.1.20
