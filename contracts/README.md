@@ -1,7 +1,7 @@
 # 좋아 (✨) on MegaETH
 
-`src/Joah.sol` combines an OpenZeppelin ERC20 with fixed game rules. The name is
-`좋아`, the symbol is `✨`, and one token has six decimal places. ClipClub uses a
+[`src/Joah.sol`](src/Joah.sol) combines an OpenZeppelin ERC20 with fixed game rules. The name is
+`좋아`, the symbol is `✨`, and one token is 1,000,000 base units (six decimals). ClipClub uses a
 fireworks logo. ETH remains the chain's gas currency.
 
 There is one explicit genesis allocation to the constructor's treasury. Supply
@@ -31,7 +31,7 @@ Compressed and uncompressed encodings produce the same normalized randomness.
 
 The expected total payout is `1013 / 1023` times the wager. Individual profitable
 wins increase supply, losses reduce it, and the weighted game is slightly
-deflationary in expectation. Existing total-payout semantics are preserved.
+deflationary in expectation.
 Worst-case pending profit reserves prevent supply overflow at settlement.
 
 There is no timeout refund or alternate round: either could allow selective
@@ -45,11 +45,26 @@ three to six seconds before proof availability, plus transaction delays.
 
 The app computes the selected seeder curve and six-decimal rewards locally, using a persistent 30-day population estimate (minimum 21) and registered permanent seeders. Each queued rating freezes its population, recipients and per-seeder reward. No formula or population census runs on-chain.
 
+### Seeder registration
+
 `registerSeeder(bytes32)` binds the calling wallet to the SHA-256 commitment of a peer identity. The authenticated peer advertises that wallet and its permanent clips. The app verifies this binding, excludes temporary seeds and the rater, and deduplicates wallets and peers. The contract does not independently prove seeding or Sybil resistance.
 
-`settleSeederRatings(bytes32,SeederRating[],bytes32)` settles up to 100 clips and 1,000 seeder payments atomically. A `SeederRating` contains the clip ID, score, local population, reward per seeder, sorted recipient wallets and matching peer commitments. The rater pays exactly the sum of scores. For total charge C, seeder payout P and existing rating credit B, the contract mints `max(0, P - C - B)` and sets `ratingCredit[rater]` to `max(0, B + C - P)`. Unused contributions fund that wallet's future rewards. Insufficient rater balance or exhausted arithmetic capacity reverts every transfer, mint and replay marker. Credit belonging to another wallet and roll escrow remain untouched.
+### Batch settlement and funding
+
+`settleSeederRatings(bytes32,SeederRating[],bytes32)` settles up to 100 clips and 1,000 seeder payments atomically. A `SeederRating` contains the clip ID, score, local population, reward per seeder, sorted recipient wallets and matching peer commitments. The rater pays exactly the sum of scores in ✨.
+
+For total charge **C**, seeder payout **P** and existing rating credit **B**, all in token base units:
+
+```text
+minted = max(0, P - C - B)
+ratingCredit[rater] = max(0, B + C - P)
+```
+
+Unused contributions fund that wallet's future rewards. Insufficient rater balance or exhausted arithmetic capacity reverts every transfer, mint and replay marker. Credit belonging to another wallet and roll escrow remain untouched.
 
 No prefunding or manual grant transaction is required. `totalRatingMinted` tracks cumulative seeder issuance. `SeederFunding` records the payout, minted amount and the rater's credit before/after. The app verifies this accounting from canonical events. Rating minting and roll commitments share capacity checks so new seeder issuance cannot consume supply headroom reserved for pending roll payouts.
+
+### Trust model and receipts
 
 Automatic rating minting is permissionless within contract bounds. The contract does not validate the locally evaluated curve, prove storage, require reward attestations, or apply a policy emissions schedule/cap. Client-side observations and formula enforcement can be bypassed by modified clients; registration, replay protection and basic reward/batch bounds still apply.
 
@@ -70,12 +85,13 @@ Tests execute the bytecode in a local EVM with a test-only oracle. They cover
 all ten payout tiers and supply changes, the exact ticket distribution,
 rejection sampling, future commitments, proof and replay failures, no-code/
 wrong-network deployment rejection, pending recovery, overflow reserves,
-ERC20 transfers/allowances, rating transfers, atomic batches, aggregate balance checks, session replay protection, and the 100-item bound. Local tests do not reproduce
+ERC20 transfers/allowances, rating transfers, atomic batches, aggregate balance
+checks, session replay protection, and the 100-item bound. Local tests do not reproduce
 MegaEVM gas accounting or validate the real BLS implementation.
 
 `npm run build` writes ignored artifacts and refreshes committed
 `abi-selectors.json`, which Rust includes directly. Compiler is Solidity
-0.8.30, optimizer 200 runs, Shanghai EVM target. Runtime is about 6.7 KiB.
+0.8.30, optimizer 200 runs, Shanghai EVM target.
 
 An optional read-only integration check validates a live quicknet proof against
 the canonical chain verifier. It needs network access and no funded wallet:
@@ -88,13 +104,17 @@ npm run check:verifier -- --mainnet
 Ganache and its transitive packages are development-only. No npm package ships
 inside ClipClub's Rust application or is used to hold wallet keys.
 
-## Prepare and deploy
+## Deployment record and tools
+
+### Mainnet deployment
 
 **좋아 was deployed on MegaETH mainnet on 2026-11-04 at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16).** [Transaction `0x776686e4…441211f`](https://mega.etherscan.io/tx/0x776686e41987d79d2eda546eab5c74e9fd38f3e6ad1678b1195194c87441211f) was included in block 31,031,878. Full initcode, canonical inclusion, token metadata, immutable verifier and the genesis mint were independently checked through the public mainnet RPC. See [the public deployment record](mainnet-deployment.json).
 
-`mainnet-launch.json` records the deployed configuration. Deployment commands reject a second deployment of this launch. The genesis supply went to the treasury; seeder reward shortfalls are minted automatically during session settlement. A funded MegaETH wallet is needed for seeder registration, ratings, requests, and reveal transactions.
+[`mainnet-launch.json`](mainnet-launch.json) records the deployed configuration. Deployment commands reject a second deployment of this launch. The genesis supply went to the treasury; seeder reward shortfalls are minted automatically during session settlement. A funded MegaETH wallet is needed for seeder registration, ratings, requests, and reveal transactions.
 
 Source verification has exact creation and runtime matches on [Sourcify](https://repo.sourcify.dev/4326/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16), an exact source match on [Mega Etherscan](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16#code), and verified status on [MegaETH Blockscout](https://megaeth.blockscout.com/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16?tab=contract). The compiler is Solidity `v0.8.30+commit.73712a01`, with optimizer 200 runs and Shanghai EVM target.
+
+### Network configuration
 
 | Network | Chain ID | RPC | Immutable verifier |
 | --- | ---: | --- | --- |
@@ -105,10 +125,12 @@ The constructor rejects other chain IDs, with isolated chain 31337 as the sole
 exception for mock-oracle tests. On MegaETH it requires the canonical verifier
 address and nonempty code.
 
-The selected launch in tracked `mainnet-launch.json` is **MegaETH mainnet
+The selected launch in [`mainnet-launch.json`](mainnet-launch.json) is **MegaETH mainnet
 (4326)** with **1,000,000,000 ✨** (`1000000000000000` base units) sent to
 **`0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`**. The recipient is the
 explicit wallet address selected for this launch; no ENS resolution is used.
+
+### Deployment tools
 
 The completed mainnet launch used these commands to prepare unsigned initcode with a remote gas estimate and 20% margin, then open the local wallet review page. They now reject repeating the deployed launch:
 

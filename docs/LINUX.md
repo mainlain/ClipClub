@@ -1,19 +1,23 @@
 # Linux
 
-clipclub uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interface, video validator, BitTorrent client, and peer mesh run in the same application process. No browser, Node.js, installed Rust toolchain, or separate FFmpeg installation is needed to run a bundled release.
+clipclub uses a native GTK 3 / WebKitGTK 4.1 desktop window on Linux. Its interface, BitTorrent client, and peer mesh run in the application; the bundled video validator runs as a separate process. No browser, Node.js, installed Rust toolchain, or separate FFmpeg installation is needed to run a bundled release.
+
+See the [project overview](../README.md) for app features and the [release guide](RELEASES.md) for publishing and app updates.
 
 ## Packages
 
 The x86-64 release targets Ubuntu 22.04 or a newer compatible desktop with GTK 3 and WebKitGTK 4.1. It contains an embedded Linux video validator; the OS WebView and GStreamer remain system libraries.
 
-- `clipclub-0.1.0-linux-x86_64.tar.gz`: portable archive.
-- `clipclub_0.1.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
-- `clipclub-linux-x86_64-SHA256SUMS.txt`: artifact checksums.
+Release filenames include the version. The examples below use `0.2.0`; substitute the version you downloaded.
+
+- `clipclub-0.2.0-linux-x86_64.tar.gz`: portable archive.
+- `clipclub_0.2.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
+- `SHA256SUMS.txt`: published package and manifest checksums.
 
 On Debian/Ubuntu, install the `.deb` and its runtime dependencies with:
 
 ```sh
-sudo apt install ./clipclub_0.1.0_amd64.deb
+sudo apt install ./clipclub_0.2.0_amd64.deb
 clipclub
 ```
 
@@ -24,8 +28,8 @@ The Debian package's command-line and desktop launchers use `--user-data`, stori
 Extract the archive and run:
 
 ```sh
-tar -xzf clipclub-0.1.0-linux-x86_64.tar.gz
-cd clipclub-0.1.0-linux-x86_64
+tar -xzf clipclub-0.2.0-linux-x86_64.tar.gz
+cd clipclub-0.2.0-linux-x86_64
 ./clipclub
 ```
 
@@ -98,11 +102,15 @@ export CLIPCROP_LINUX_PROBE_LICENSE_FILE="$PWD/.build/linux-ffprobe/LICENSE.LGPL
 
 It verifies both ELF architectures and that the selected validator bytes are embedded in the application. Release packaging also supplies `CLIPCROP_LINUX_PROBE_SOURCE_ARCHIVE`, `CLIPCROP_LINUX_PROBE_BUILD_SCRIPT`, `CLIPCROP_LINUX_PROBE_CONFIGURE_ARGS` (a file path or literal arguments), and `CLIPCROP_LINUX_PROBE_DAV1D_COPYRIGHT`. Optional decoder source/debian-patch archives and other license/source files can be included through the corresponding `DAV1D_SOURCE_ARCHIVE`, `DAV1D_DEBIAN_PATCHES`, and newline-separated `EXTRA_SOURCE_FILES` variables with the same `CLIPCROP_LINUX_PROBE_` prefix. `CLIPCROP_LINUX_THIRD_PARTY_NOTICE` supplies the matching Linux notice; `CLIPCROP_LINUX_LDD_REPORT` records linked system libraries.
 
+Local packaging writes its checksums to `clipclub-linux-x86_64-SHA256SUMS.txt`. Published releases use the combined `SHA256SUMS.txt` described above.
+
 For a development build using an installed validator:
 
 ```sh
 CLIPCROP_FFPROBE=/usr/bin/ffprobe cargo run
 ```
+
+## Networking and discovery
 
 The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Peers connect automatically through mDNS on the local network and the public BitTorrent Mainline DHT across the internet; there is no peer-address entry. Allow local multicast for mDNS and outbound UDP for DHT discovery. The app attempts UPnP forwarding for both TCP ports on supported routers. Restrictive NAT, carrier-grade NAT, firewalls, or disabled UPnP can still require router configuration to make those ports reachable. There is no hosted relay or guaranteed NAT traversal.
 

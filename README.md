@@ -1,12 +1,12 @@
-# clipclub
+# ClipClub
 
-**좋아 is deployed on MegaETH mainnet at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16).** Each eligible permanent seeder receives `rating × y(x) / 100` 좋아, rounded down to six decimals, using the selected normalized logistic curve. The rater pays exactly the rating score. Unused rating contributions carry forward as wallet-scoped credit, and settlement automatically mints any remaining reward shortfall. Rating payments never spend roll escrow.
+ClipClub is a Rust desktop app for sharing short videos through BitTorrent and paying with **좋아 (✨)**, its Ethereum-compatible ERC-20 token on **MegaETH**. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
 
-The desktop app calculates rewards locally from registered permanent seeder wallets and a persistent 30-day active-peer population estimate, with **N ≥ 21**. Recipients and rewards are frozen when queued and settled together on-chain. See [rating distribution rules](docs/RATING_DISTRIBUTION.md) for the formula, eligibility, funding and trust model.
+Set up your built-in wallet on first launch and unlock it when opening the app. Token actions require your approval; sharing and free skips require no payment. Token balances and payments live on MegaETH, and rolls settle through its deployed drand quicknet verifier.
 
-A Rust desktop app for sharing short videos through BitTorrent and paying with **좋아 (✨)**, its Ethereum-compatible ERC-20 token on **MegaETH**. The token uses six decimals and a fireworks logo. There is no application account server or hosted video service. The interface and its assets are embedded in the executable.
+**The app defaults to 좋아 on MegaETH mainnet at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16).** See [wallet and token details](#좋아-on-megaeth) for setup, payments and settlement rules.
 
-Token balances and payments live on MegaETH. Rolls commit to a future drand quicknet round and settle through MegaETH’s deployed verifier. The source includes the contracts and deployment tools. The mainnet deployment created an initial supply of 1,000,000,000 ✨ for treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. The app defaults to the deployed mainnet contract. Set up your built-in wallet on first launch and unlock it when opening the app. Token actions require your approval; sharing and free skips require no payment.
+[Run](#run) · [Main menu](#main-menu) · [Build](#build) · [Validation](#validation) · [Documentation](#documentation)
 
 ## Run
 
@@ -16,6 +16,8 @@ On Apple Silicon macOS, open `dist/clipclub.app`, or run the executable:
 ./dist/clipclub
 ```
 
+### Profile storage and backups
+
 The app is portable by default: your profile is stored in `clipclub-data` beside the executable, or beside `clipclub.app` on macOS. Keep the app and that data folder together inside one writable folder; quit before moving or copying the whole folder to another location or computer. The macOS profile stays outside the signed app bundle so creating a wallet does not change the app's signature. The profile location follows the application, regardless of the terminal's working directory.
 
 Use `--data-dir PATH` to choose a different profile folder. For system installations or a read-only application location, `--user-data` selects `~/Library/Application Support/ClipCrop Points` on macOS or `$XDG_DATA_HOME/clipcrop-points` on Linux, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Debian package launchers select this mode automatically. An explicit `--data-dir` takes precedence. Portable mode reports an error if its folder is not writable, so it cannot silently open a different wallet in your home directory.
@@ -24,7 +26,7 @@ The profile contains your private peer identity, legacy rating history, watched 
 
 The app closes its network sessions when you quit. It resumes your permanent library after reopening and revalidating the stored videos. The desktop WebView uses a temporary browser session, with durable app data kept in the profile. It does not install a background service. Run the binary matching the destination computer's OS and CPU; native WebView libraries and playback codecs still come from the operating system, and token actions require the MegaETH network.
 
-## Linux
+### Linux
 
 Linux x86-64 builds target Ubuntu 22.04 or a compatible newer distribution with GTK 3 / WebKitGTK 4.1. The video validator is embedded; the OS supplies the desktop WebView and GStreamer playback codecs.
 
@@ -32,7 +34,7 @@ See [Linux run and build instructions](docs/LINUX.md) for runtime packages, port
 
 ## App updates
 
-clipclub checks the [latest published GitHub release](https://github.com/mainlain/ClipClub/releases/latest) at startup and every six hours. Settings shows the installed version, available update, release notes, and a manual check. Drafts and prereleases are excluded. GitHub access is anonymous; the app does not contain a GitHub credential.
+ClipClub checks the [latest published GitHub release](https://github.com/mainlain/ClipClub/releases/latest) at startup and every six hours. Settings shows the installed version, available update, release notes, and a manual check. Drafts and prereleases are excluded. GitHub access is anonymous; the app does not contain a GitHub credential.
 
 On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. The adjacent macOS profile is kept in place, and the Linux portable `clipclub-data` folder is retained when replacing its package. A direct macOS executable and system-managed installations such as a Debian package offer the matching download for manual installation. An update is installed only when you choose it.
 
@@ -76,6 +78,10 @@ The name is **좋아**, the ERC-20 symbol is **✨**, and the logo is the [multi
 
 The [mainnet deployment transaction](https://mega.etherscan.io/tx/0x776686e41987d79d2eda546eab5c74e9fd38f3e6ad1678b1195194c87441211f) was included in block **31,031,878** on 2026-11-04. Its full initcode, token metadata, immutable verifier and genesis mint to the selected treasury were independently checked through the mainnet RPC. The public record is in [contracts/mainnet-deployment.json](contracts/mainnet-deployment.json). Deployment commands reject a second deployment of this launch.
 
+The constructor created 1,000,000,000 ✨ for treasury `0xcBBF8e516F9a3ad56Efe28A0aEBf69Edc4639637`. There is no public mint function or per-profile grant. Existing points receipts remain compatible for historical clip ratings, but cannot pay for anything or redeem tokens. Initial token distribution is an operator decision; the app does not assume a conversion rate or a faucet.
+
+### Network configuration
+
 Open the app normally to use the deployed mainnet token. You can also select the address explicitly:
 
 ```sh
@@ -86,13 +92,17 @@ CLIPCLUB_JOAH_CONTRACT=0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16 \
 
 `6343` selects MegaETH testnet; `4326` selects mainnet, the project default. Testnet requires an explicit contract address and never inherits the mainnet token. Set `CLIPCLUB_JOAH_CONTRACT` to an empty string to disable token configuration. The default RPCs are `https://carrot.megaeth.com/rpc` and `https://mainnet.megaeth.com/rpc`. `CLIPCLUB_MEGAETH_RPC_URL` optionally selects a trusted HTTPS RPC. The app checks its chain ID. Custom RPC credentials are never sent to the UI. All peers that exchange paid ratings must configure the same chain and contract. Wallet keys are generated locally or imported by you. There are no embedded shared keys, API subscriptions, or automatically funded wallets.
 
+### Wallet setup and approvals
+
 On first launch, set up your wallet before entering the app: create a built-in Ethereum wallet, import a 32-byte private key, or restore an encrypted ClipClub wallet backup. New and imported keys are encrypted with a password of at least 12 characters and stored in your profile. On later launches, enter your password at startup. The wallet stays unlocked for the entire app session and locks only when you quit; it has no inactivity timeout or manual lock control. Passwords and imported keys are cleared from the form and are never saved in browser storage. Open **Wallet** or **Wallet details** in Settings and choose **Download encrypted backup**. Keep that file and its password safely; there is no password reset or recovery service.
 
 The built-in wallet signs inside the app. Each payment opens a review showing the action, network, sender, token contract, token amount and maximum gas fee. **Approve and send** authorizes that single prepared transaction; **Cancel** leaves the payment unpaid. The app validates the account, configured contract and chain, estimates gas against the selected MegaETH network, and saves the signed transaction before broadcasting. **Retry confirmation** can rebroadcast the same bytes without signing another payment. ETH on the selected network pays gas. The receive address accepts ETH and 좋아 (✨) on MegaETH; sending funds on another network does not make them available here.
 
 The wallet manages one private key per profile and signs the app’s token actions on its configured MegaETH mainnet or testnet. It does not offer seed phrases, arbitrary dapp connections, arbitrary message signing, or a general-purpose transfer screen. Backups use ClipClub’s encrypted keystore format.
 
-The constructor creates 1,000,000,000 ✨ once for the selected treasury. There is no public mint function or per-profile grant. Existing points receipts remain compatible for historical clip ratings, but cannot pay for anything or redeem tokens. Initial token distribution is an operator decision; the app does not assume a conversion rate or a faucet.
+### Rating payments and seeder rewards
+
+Each eligible permanent seeder receives `rating × y(x) / 100` 좋아, rounded down to six decimals. The app calculates rewards locally using the selected normalized logistic curve and a persistent 30-day active-peer population estimate, with **N ≥ 21**. See [rating distribution rules](docs/RATING_DISTRIBUTION.md) for the formula, eligibility, funding and trust model.
 
 Paid ratings debit `score × 1,000,000` existing units from the rater and distribute locally calculated rewards to registered permanent seeder wallets. Unused rating contributions carry forward as credit for that wallet's future seeder rewards. Settlement automatically mints any shortfall left after applying credit; no treasury grant, sponsor deposit or prefunding is required. Settings displays unused credit, and session review estimates the new tokens to be minted.
 
@@ -124,7 +134,7 @@ Clips are separate from randomness and settlement. A positive roll chooses a rea
 
 The implementation follows [MegaETH’s developer skill](https://github.com/megaeth-labs/skills), [current VRF documentation](https://docs.megaeth.com/developer-docs/vrf), and [MegaETH gas guidance](https://github.com/megaeth-labs/skills/blob/main/skills/megaeth-developer-skills/references/gas-model.md).
 
-### Network and trust limits
+## Network and trust limits
 
 Peers are discovered automatically through libp2p mDNS on the local network and the public BitTorrent Mainline DHT across the internet. A shared, versioned ClipClub discovery key advertises the peer mesh's TCP listening port; public DHT bootstrap nodes supply the initial routing contacts. Discovery runs while the app is open and requires no saved peer addresses. DHT results are untrusted connection candidates; Noise and signed GossipSub messages authenticate connected peers before the app accepts their metadata or ratings.
 
@@ -136,7 +146,7 @@ Duplicate detection is exact-byte detection. Re-encoding, editing, or changing e
 
 The embedded UI is served only on `127.0.0.1`, with a fresh per-process access token. The local HTTP service is an internal part of the desktop process. It is not a public application backend. Video uploads and the player communicate with that local service; video bytes move between users through BitTorrent.
 
-## Automatic peer discovery
+### Automatic peer discovery
 
 Open the app and it searches for peers automatically on the local network and across the internet. To verify local discovery, open two instances with separate data directories and ports:
 
@@ -175,13 +185,7 @@ For backend-only operation, which needs no desktop WebView dependencies:
 CLIPCROP_FFPROBE="$PWD/vendor/ffprobe" cargo run --no-default-features -- --headless --data-dir /tmp/clipclub-test
 ```
 
-Run the checks with:
-
-```sh
-./scripts/check.sh
-```
-
-This runs formatting when `rustfmt` is installed, all backend targets/tests, a desktop compile check, and JavaScript syntax checks when Node is available. Tests cover rating and roll math, signatures and persistence, roll playback behavior, menu navigation, file limits and malformed media, deterministic torrents and unsafe metadata, and peer identity/message validation. Automatic DHT discovery and reconnection use a local Mainline DHT fixture without public infrastructure. The mDNS network test requires a multicast-capable LAN and runs separately with `cargo test --no-default-features mdns_discovers_real_peers -- --ignored`. A separate real multi-process smoke test is needed for network behavior across your actual devices, routers, and OS codecs.
+See [Validation](#validation) for checks and integration tests.
 
 ## Source layout
 
@@ -193,19 +197,48 @@ This runs formatting when `rustfmt` is installed, all backend targets/tests, a d
 | `contracts/` | 좋아 ERC-20, drand rolls, rating payments, deployment tooling and EVM tests |
 | `src/wallet.rs` | Encrypted private-key storage, lock/unlock, backups and transaction signing |
 | `src/media.rs` | Bounded media validation and portable validator installation |
+| `src/rating_distribution.rs` | Seeder reward curve and six-decimal reward calculations |
 | `src/torrent.rs` | Deterministic torrent creation and BitTorrent sessions |
 | `src/peer.rs` | Identity, discovery, authenticated gossip and presence |
 | `src/discovery.rs` | Bounded discovery candidates, address validation and connection retries |
+| `src/diagnostics.rs` | Network checks and diagnostic reports |
+| `src/update.rs` / `src/update_install.rs` | Release discovery, package validation and update installation |
 | `ui/` | Embedded minimalist interface and native WebView video element |
 
-clipclub's original source is MIT licensed. Third-party components retain their own licenses.
+ClipClub's original source is [MIT licensed](LICENSE). Third-party components retain their own licenses; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Validation
 
-Run `bash scripts/check.sh` for Rust tests, desktop compilation, UI syntax, and Node behavior tests. With contract dependencies installed (`npm ci --prefix contracts`), it also runs the Solidity compilation and local EVM tests. `npm --prefix contracts run check:verifier` optionally checks the deployed MegaETH verifier through the public RPC without signing anything.
+Run the standard checks from the project root:
+
+```sh
+./scripts/check.sh
+```
+
+This checks formatting when `rustfmt` is installed, runs all backend targets/tests, and checks desktop compilation. It also runs UI syntax and behavior tests when Node is available, and discovery diagnostics tests when Python 3 is available. With contract dependencies installed (`npm ci --ignore-scripts --prefix contracts`), it compiles Solidity and runs the local EVM tests.
+
+### Integration checks
+
+These checks run separately from `check.sh`:
+
+| Command | Coverage and requirements |
+| --- | --- |
+| `cargo test --no-default-features mdns_discovers_real_peers -- --ignored` | Real mDNS discovery; requires a multicast-capable LAN |
+| `python3 scripts/integration.py` | Peer discovery, media validation, transfers, HTTP protection, free skips, restarts and profile relocation; requires `target/debug/clipclub`, `.build/ffmpeg`, a bundled or configured `ffprobe`, and multicast discovery |
+| `python3 scripts/package-smoke.py dist/clipclub` | Packaged executable's embedded validator and profile persistence |
+| `node scripts/session-integration.mjs dist/clipclub` | Queued-rating checkout with three real app processes and a disposable local EVM; requires contract dependencies, `.build/ffmpeg` and executable `vendor/ffprobe` |
+| `npm --prefix contracts run check:verifier` | Read-only live check of the deployed MegaETH verifier; requires contract dependencies and public RPC access |
 
 `CLIPCROP_FFPROBE="$PWD/vendor/ffprobe" python3 scripts/integration.py target/debug/clipclub .build/ffmpeg --diagnostics-only` checks the built-in diagnostics API with two real app processes, including authentication, report privacy, reachable TCP listeners, and a failed video port. This focused mode works without multicast discovery between the processes.
 
-`python3 scripts/integration.py` exercises real local peer discovery, media validation, transfers, HTTP protection, free skips, restarts, profile relocation, and rejection of the retired local-wager API. `python3 scripts/package-smoke.py dist/clipclub` checks a packaged executable’s embedded validator and profile persistence. These use no funded wallets. Contract tests cover every monetary outcome, invalid proofs, timing, replay, deployment guards, and supply invariants. Rust mock-RPC tests cover receipt/chain validation, canonical blocks, ABI encoding, and pending-roll recovery; wallet tests cover exact precision, session checkout, and confirmation retries. `node scripts/session-integration.mjs dist/clipclub` exercises the complete queued-rating checkout against a disposable local EVM and three real app processes; it never contacts MegaETH or spends real funds. A funded testnet rehearsal is still required before operating a live token.
+The local integration checks use no funded wallets. Automatic DHT discovery and reconnection tests use a local Mainline DHT fixture. Actual devices, routers and OS codecs still need a separate smoke test. Contract tests cover monetary outcomes, invalid proofs, timing, replay, deployment guards and supply invariants. Rust mock-RPC tests cover receipt/chain validation, canonical blocks, ABI encoding and pending-roll recovery; wallet tests cover exact precision, session checkout and confirmation retries. A funded testnet rehearsal is still required before operating a live token.
 
 The local-chain checkout uses the built-in wallet. It verifies encrypted storage and backups, password unlock after restart, approval invalidation, local signing, and recovery while locked without consuming a second transaction nonce.
+
+## Documentation
+
+- [Linux](docs/LINUX.md): runtime packages, portable installation and Linux builds.
+- [Releases](docs/RELEASES.md): version policy, publishing and update packages.
+- [Rating distribution](docs/RATING_DISTRIBUTION.md): reward formula, population estimate, eligibility and funding.
+- [Contracts](contracts/README.md): token rules, local EVM tests and deployment tooling.
+- [Artwork](assets/README.md): application and token logos, sizes and export instructions.

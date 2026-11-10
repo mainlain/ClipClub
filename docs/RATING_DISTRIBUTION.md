@@ -1,6 +1,6 @@
-# Rating distribution design intent
+# Rating distribution
 
-Updated on 2026-11-04. The selected curve in `src/rating_distribution.rs` is connected to local rating drafts and on-chain seeder settlement. The rater pays exactly the rating score in existing 좋아 tokens. Unused rating contributions carry forward as wallet-scoped credit. Settlement mints any reward shortfall remaining after that credit is used. The token is deployed on MegaETH mainnet at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16); see [the verified deployment record](../contracts/mainnet-deployment.json).
+The curve in [`src/rating_distribution.rs`](../src/rating_distribution.rs) determines rewards for permanent seeders. The rater pays exactly the rating score in existing 좋아 (✨) tokens. Unused rating contributions carry forward as wallet-scoped credit. Settlement mints any reward shortfall remaining after that credit is used. The token is deployed on MegaETH mainnet at [`0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16`](https://mega.etherscan.io/address/0x98d49dC44f1CbbA5ABef438985b20A729dE4ab16); see [the verified deployment record](../contracts/mainnet-deployment.json).
 
 ## Selected curve
 
@@ -16,19 +16,19 @@ y(x)=1+99\frac{s(x)-s(N)}{s(1)-s(N)}
 
 The continuous curve decreases from exactly `y(1) = 100` to exactly `y(N) = 1`, with its inflection at `x = 0.05N`. For example, when `N = 100`, `y(5)` is approximately `51.406624` and `y(10)` is approximately `1.674728`.
 
-For a rating r, **each seeder** receives `r × y(x) / 100` points. This amount is not divided by x. Rewards use six decimal places, rounding down to whole micropoints:
+For a rating **r**, **each seeder** receives `r × y(x) / 100` ✨. This amount is not divided by x. Rewards use six decimal places, rounding down to whole token base units (1 ✨ = 1,000,000 base units):
 
 ```text
-reward_micropoints = floor(r × y(x) / 100 × 1,000,000)
+reward_base_units = floor(r × y(x) / 100 × 1,000,000)
 ```
 
-A lone seeder receives exactly the full rating; at `x = N`, each seeder receives exactly 1% of the rating. A zero rating is a free skip and pays zero. For example, a rating of 5 with `N = 100` pays each of five seeders `2.570331` points, and each of 100 seeders `0.05` points.
+A lone seeder receives exactly the full rating; at `x = N`, each seeder receives exactly 1% of the rating. A zero rating is a free skip and pays zero. For example, a rating of 5 with `N = 100` pays each of five seeders `2.570331` ✨, and each of 100 seeders `0.05` ✨.
 
-Floating-point rounding and conversion to whole micropoints can produce the minimum payout before `x = N`; the unique minimum at `x = N` is a property of the exact continuous formula.
+Floating-point rounding and conversion to whole base units can produce the minimum payout before `x = N`; the unique minimum at `x = N` is a property of the exact continuous formula.
 
 ## Local calculation and on-chain settlement
 
-Calculate the selected curve and each seeder's six-decimal reward locally in the desktop app, using locally observed seeder and population inputs. Keep these calculations off-chain when integrating seeder payments; token transfers should still settle on-chain in rating-session batches. The Rust app calculates and freezes the population, reward and recipients when each rating is queued. Session checkout sends those frozen results in one `settleSeederRatings` transaction.
+The desktop app calculates the curve and each seeder's six-decimal reward from locally observed seeder and population inputs. It freezes the population, reward and recipients when each rating is queued. Session checkout sends those frozen results in one on-chain `settleSeederRatings` transaction.
 
 The contract enforces wallet authorization, registered seeder identities, distinct sorted recipient wallets, reward bounds, balances and replay protection. It does not evaluate the logistic curve or verify actual storage. Up to 100 ratings and 1,000 individual seeder payments can settle atomically in one session.
 
@@ -43,7 +43,7 @@ new_credit = max(0, B + C - P)
 
 Settlement debits exactly C from the rater, adds any required newly minted tokens, and pays P to the registered seeders atomically. No treasury grant, sponsor deposit or prefunding is required. The rater still needs the full rating cost in their wallet; unused credit funds seeder rewards rather than replacing that contribution.
 
-A rating of 5 with five seeders and N=100 costs the rater 5 ✨ and pays 12.851655 ✨ in total. With no previous credit, settlement mints 7.851655 ✨. With 1 ✨ of credit, settlement consumes that credit and mints 6.851655 ✨. If payouts are below the contribution, the unspent existing tokens remain in the contract as that rater's credit for future rewards. The contract does not spend another wallet's credit or roll escrow.
+A rating of 5 with five seeders and `N = 100` costs the rater 5 ✨ and pays 12.851655 ✨ in total. With no previous credit, settlement mints 7.851655 ✨. With 1 ✨ of credit, settlement consumes that credit and mints 6.851655 ✨. If payouts are below the contribution, the unspent existing tokens remain in the contract as that rater's credit for future rewards. The contract does not spend another wallet's credit or roll escrow.
 
 Minting happens once per session after all distributions are validated. An invalid item, insufficient rater balance or exhausted uint256 capacity reverts contributions, minting, payouts and replay markers together. Capacity checks reserve headroom for the worst-case payouts of every already committed roll. `totalRatingMinted` tracks cumulative issuance, and `SeederFunding` records each session's total payout, minted amount and credit before/after. The app verifies those funding records as well as the exact seeder payments before committing receipts.
 
@@ -65,7 +65,7 @@ Session review displays each clip's recipients and per-seeder reward separately 
 N = max(21, 1 + distinct other peer IDs observed active during the last 30 days)
 ```
 
-- **21 is the minimum integer value of N**, because the selected curve requires `N > 20`. This supersedes the earlier minimum of 20. N grows with the estimated user base; it is neither fixed at 21 nor capped at 21.
+- **21 is the minimum integer value of N**, because the selected curve requires `N > 20`. N grows with the estimated user base; it is neither fixed at 21 nor capped at 21.
 - Include the local user's peer identity once (the `1` above). Count each other peer identity once, regardless of the number of announcements or connections.
 - Receiving a fresh presence announcement qualifies as activity. Rating, uploading, or seeding a clip is not required to count toward N.
 - Different apps may have different estimates because they observe different peers. This is acceptable; a globally agreed census is not required.
@@ -73,10 +73,12 @@ N = max(21, 1 + distinct other peer IDs observed active during the last 30 days)
 
 N is a population input. The number of peers permanently seeding a particular clip is the separate input x. The selected curve reaches 1 when x equals N.
 
-## Population persistence and historical compatibility
+## Population persistence and receipt history
 
-`Store::observe_peer` records a timestamp for each authenticated presence announcement in the profile's persistent `peer_activity` map. The estimate deduplicates peer identities, counts the local peer once, applies the minimum of 21, and excludes observations at least 30 days old. Disconnecting or pruning current connectivity does not erase monthly history. Restarting preserves it; old profiles acquire an empty history through a backwards-compatible default.
+[`Store::observe_peer`](../src/core.rs) records a timestamp for each authenticated presence announcement in the profile's persistent `peer_activity` map. The estimate deduplicates peer identities, counts the local peer once, applies the minimum of 21, and excludes observations at least 30 days old. Disconnecting or pruning current connectivity does not erase monthly history. Restarting preserves it; profiles without stored observations start with an empty history.
 
 Archived signed points receipts retain their original square-root calculation and signing bytes. They are not recalculated or converted into tokens. Paid rating receipts continue to bind scores to successful canonical contract events and the rater's peer identity.
 
-The end-to-end session test uses three actual local app processes and a disposable EVM, with persistent monthly history N=100. It checks multiple permanent seeders, exact Rust/Solidity calldata agreement, fixed rater charges, automatic shortfall minting without prefunding, restart recovery, peer receipt propagation and duplicate confirmation without additional payment.
+## Validation
+
+The end-to-end session test uses three local app processes and a disposable EVM, with persistent monthly history `N = 100`. It checks multiple permanent seeders, exact Rust/Solidity calldata agreement, fixed rater charges, automatic shortfall minting without prefunding, restart recovery, peer receipt propagation and duplicate confirmation without additional payment.

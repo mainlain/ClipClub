@@ -1,5 +1,7 @@
 # Releases and app updates
 
+See the [project overview](../README.md) for using the app and the [Linux guide](LINUX.md) for installation and local builds.
+
 The source repository and release downloads are public so installed apps can check GitHub and download packages without user accounts, embedded tokens, or a separate update service. The app reads `https://api.github.com/repos/mainlain/ClipClub/releases/latest`, selects a package for its OS/CPU, and verifies the SHA-256 asset digest supplied by GitHub before preparing an installation. The separately published manifest/checksum files provide an audit record; the app does not trust a user-provided update URL.
 
 Checks run at startup and every six hours, with a manual check in Settings. Choosing **Install and restart** updates a writable macOS app bundle or portable Linux installation. A staged helper replaces the application after it exits and restores the previous app if replacement fails; the existing profile is retained. A direct macOS executable and system-managed Linux installation such as `.deb` use the browser download/manual installation path. No release is required during setup, and publishing a new stable version advertises it to the next successful check.
@@ -23,7 +25,7 @@ The macOS bundles are ad hoc signed and verified, without Developer ID notarizat
 
 ## Verify builds without publishing
 
-Run the workflow manually from the desired branch with `tag` set to the version in that branch's `Cargo.toml` (for example `v0.1.0`) and leave `publish` false. A build-only run does not require that tag to exist. The two native build artifacts and complete release manifest are available on the Actions run. To publish from a manual run, select the exact existing version tag as the workflow revision and set `publish` true.
+Run the workflow manually from the desired branch with `tag` set to the version in that branch's `Cargo.toml` (for example `v0.2.0`) and leave `publish` false. A build-only run does not require that tag to exist. The two native build artifacts and complete release manifest are available on the Actions run. To publish from a manual run, select the exact existing version tag as the workflow revision and set `publish` true.
 
 Local release-tool checks are:
 
@@ -36,7 +38,7 @@ bash -n scripts/build-release-ffprobe.sh scripts/package.sh scripts/package-linu
 
 ## Published assets
 
-For version `0.2.0`, the assets are:
+For example, version `0.2.0` produces these assets:
 
 | Target | Asset | Archive layout |
 | --- | --- | --- |
