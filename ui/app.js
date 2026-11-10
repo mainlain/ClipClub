@@ -11,6 +11,9 @@ let navigationQueue=Promise.resolve(),sessionToggleBusy=false,ratingRecoveryStat
 let diagnosticsResult=null,diagnosticsBusy=false,diagnosticsError='',diagnosticsPortsReady=false;
 const diagnosticsPortEdits=new Set();
 let diagnosticsSuite='all',diagnosticsNotesLoaded=false,diagnosticsNotesSaved=true;
+let diagnosticsInbox=null,diagnosticsInboxLoad=null,diagnosticsInboxLoaded=false,diagnosticsInboxDirty=false,diagnosticsInboxBusy=false;
+let diagnosticsInboxCheckedAt=0,diagnosticsInboxError='',diagnosticsInboxLoadError='',diagnosticsInboxNotice='';
+let diagnosticsInboxRevision=0;
 const diagnosticsResults=new Map(),diagnosticsChecklistResults={};
 const diagnosticSuites={
   all:{title:'All checks',help:'Run a baseline before testing another device or network. Checks profile access, media tools, peers, and the configured chain without sending transactions.'},
@@ -484,8 +487,86 @@ function diagnosticExportText(){
   const header=`Test device: ${device}\nTest network: ${network}\nExported: ${new Date().toISOString()}\n\n`;
   return header+(diagnosticsResult?diagnosticsResult.report:'ClipClub hands-on device test report\nNo automated checks are included in this checklist export.\n')+`\nChecklist device: ${current.device}\nChecklist network: ${current.network}\n`+diagnosticChecklistText()+'\n\nTest notes:\n'+(notes||'None recorded.')+'\n';
 }
+function acceptDiagnosticInbox(status){
+  if(!status||typeof status.enabled!=='boolean'||typeof status.configured!=='boolean'||!Number.isInteger(status.pending)||status.pending<0)throw Error('The local client returned incomplete inbox settings.');
+  diagnosticsInbox=status;diagnosticsInboxLoaded=true;diagnosticsInboxLoadError='';
+  if(!diagnosticsInboxDirty){
+    $('diagnostics-inbox-enabled').checked=status.enabled;
+    for(const key of ['endpoint','device','session'])$(`diagnostics-inbox-${key}`).value=typeof status[key]==='string'?status[key]:'';
+    if(!$('diagnostics-device-label').value&&status.device)$('diagnostics-device-label').value=status.device;
+  }
+}
+function loadDiagnosticInbox(force=false){
+  if(diagnosticsInboxLoad)return diagnosticsInboxLoad;
+  if(!force&&diagnosticsInboxLoaded&&Date.now()-diagnosticsInboxCheckedAt<5000)return Promise.resolve();
+  diagnosticsInboxCheckedAt=Date.now();
+  const revision=diagnosticsInboxRevision;
+  diagnosticsInboxLoad=(async()=>{
+    try{const status=await api('diagnostics/inbox',undefined,'GET');if(revision===diagnosticsInboxRevision)acceptDiagnosticInbox(status);}
+    catch(error){if(revision===diagnosticsInboxRevision)diagnosticsInboxLoadError=error.message;}
+    finally{diagnosticsInboxLoad=null;renderDiagnosticInbox();}
+  })();
+  return diagnosticsInboxLoad;
+}
+function renderDiagnosticInbox(){
+  const inbox=diagnosticsInbox,changing=diagnosticsInboxBusy||diagnosticsBusy;
+  for(const id of ['diagnostics-inbox-enabled','diagnostics-inbox-endpoint','diagnostics-inbox-token','diagnostics-inbox-device','diagnostics-inbox-session'])$(id).disabled=changing;
+  $('run-diagnostics').disabled=changing;
+  $('save-diagnostics-inbox').disabled=changing||!diagnosticsInboxLoaded;
+  $('save-diagnostics-inbox').textContent=diagnosticsInboxBusy?'Please wait…':'Save inbox settings';
+  $('retry-diagnostics-inbox').disabled=changing||!inbox?.enabled||!inbox?.pending;
+  $('send-diagnostics-inbox').disabled=changing||!inbox?.enabled||(!diagnosticsResult&&diagnosticsSuite!=='checklist');
+  $('diagnostics-inbox-token-help').textContent=inbox?.configured?'An upload key is saved for this inbox address. Leave blank to keep it, or enter a new key when changing the address.':'Use the upload key supplied with your inbox.';
+  let status=diagnosticsInboxLoaded?inbox.enabled?'Automatic uploads are on.':'Automatic uploads are off. Pending reports stay on this device.':'Loading inbox settings…';
+  if(inbox){
+    if(inbox.pending)status+=` ${inbox.pending} report${inbox.pending===1?'':'s'} waiting to upload.`;
+    if(inbox.last_sent_at_ms){
+      const sent=new Date(inbox.last_sent_at_ms);if(Number.isFinite(sent.getTime()))status+=` Last sent ${sent.toLocaleString()}.`;
+    }
+  }
+  if(diagnosticsInboxNotice)status+=` ${diagnosticsInboxNotice}`;
+  if(diagnosticsInboxDirty)status+=' Save your changes to apply them.';
+  $('diagnostics-inbox-status').textContent=status;
+  const error=diagnosticsInboxError||diagnosticsInboxLoadError||inbox?.error||'';
+  $('diagnostics-inbox-error').textContent=error;$('diagnostics-inbox-error').hidden=!error;
+}
+async function saveDiagnosticInbox(event){
+  event?.preventDefault();if(diagnosticsInboxBusy||diagnosticsBusy||!diagnosticsInboxLoaded)return;
+  diagnosticsInboxRevision++;
+  diagnosticsInboxBusy=true;diagnosticsInboxError='';diagnosticsInboxNotice='';renderDiagnosticInbox();
+  const body={enabled:!!$('diagnostics-inbox-enabled').checked,endpoint:$('diagnostics-inbox-endpoint').value.trim(),device:$('diagnostics-inbox-device').value.trim().slice(0,80),session:$('diagnostics-inbox-session').value.trim().slice(0,80)};
+  const uploadKey=$('diagnostics-inbox-token').value.trim();if(uploadKey)body.upload_token=uploadKey;
+  // The upload key is sent only to the protected local API and never enters browser storage.
+  $('diagnostics-inbox-token').value='';
+  try{
+    const status=await api('diagnostics/inbox',body);
+    diagnosticsInboxDirty=false;acceptDiagnosticInbox(status);diagnosticsInboxNotice='Inbox settings saved.';
+  }catch(error){diagnosticsInboxError=error.message;}
+  finally{diagnosticsInboxBusy=false;renderDiagnosticInbox();}
+}
+async function sendDiagnosticInbox(snapshot){
+  if(diagnosticsInboxBusy||!diagnosticsInbox?.enabled)return;
+  const report=snapshot||{suite:diagnosticsSuite,generated_at_ms:diagnosticsResult?.generated_at_ms||Date.now(),report:$('diagnostics-report').value};
+  if(!report.report)return;
+  diagnosticsInboxBusy=true;diagnosticsInboxError='';diagnosticsInboxNotice='';renderDiagnosticInbox();
+  try{
+    const response=await api('diagnostics/inbox/reports',report);
+    acceptDiagnosticInbox(response.status||response);
+    diagnosticsInboxNotice='Report saved to the upload queue.';
+  }catch(error){diagnosticsInboxError=`Could not queue this report: ${error.message} Your report is still available below; use Send report to inbox to try again.`;}
+  finally{diagnosticsInboxBusy=false;renderDiagnosticInbox();}
+}
+async function retryDiagnosticInbox(){
+  if(diagnosticsInboxBusy||!diagnosticsInbox?.enabled)return;
+  diagnosticsInboxBusy=true;diagnosticsInboxError='';diagnosticsInboxNotice='';renderDiagnosticInbox();
+  try{const response=await api('diagnostics/inbox/retry',{});acceptDiagnosticInbox(response.status||response);diagnosticsInboxNotice='Upload retry requested.';}
+  catch(error){diagnosticsInboxError=error.message;}
+  finally{diagnosticsInboxBusy=false;renderDiagnosticInbox();}
+}
 function renderDiagnostics(){
   loadDiagnosticNotes();
+  if(page==='diagnostics'&&!diagnosticsInboxLoad&&!diagnosticsInboxBusy&&(!diagnosticsInboxCheckedAt||Date.now()-diagnosticsInboxCheckedAt>=5000))loadDiagnosticInbox();
+  renderDiagnosticInbox();
   if(state&&!diagnosticsPortsReady){
     for(const [id,port] of [['diagnostics-p2p-port',state.p2p_port||42931],['diagnostics-torrent-port',state.torrent_port||42932]]){
       if(!diagnosticsPortEdits.has(id))$(id).value=String(port);
@@ -499,7 +580,7 @@ function renderDiagnostics(){
   $('diagnostics-suite-help').textContent=diagnosticSuites[diagnosticsSuite].help;
   document.querySelectorAll('[data-diagnostic-suite]').forEach(button=>{button.setAttribute('aria-pressed',String(button.dataset.diagnosticSuite===diagnosticsSuite));button.disabled=diagnosticsBusy;});
   for(const id of ['diagnostics-peer','diagnostics-p2p-port','diagnostics-torrent-port'])$(id).disabled=diagnosticsBusy||!network;
-  $('run-diagnostics').disabled=diagnosticsBusy;
+  $('run-diagnostics').disabled=diagnosticsBusy||diagnosticsInboxBusy;
   $('run-diagnostics').textContent=diagnosticsBusy?'Testing…':'Run tests';
   $('diagnostics-form').setAttribute?.('aria-busy',String(diagnosticsBusy));
   $('diagnostics-status').textContent=diagnosticsBusy?`Running ${diagnosticSuites[diagnosticsSuite].title.toLowerCase()}…`:diagnosticsError?diagnosticsResult?'Tests could not complete. The previous report is shown below.':'Tests could not complete.':diagnosticsResult?.summary||'Ready to test.';
@@ -528,7 +609,7 @@ function renderDiagnostics(){
   if(prior.replace(/^Exported:.*$/m,'')!==exportText.replace(/^Exported:.*$/m,''))$('diagnostics-report').value=exportText;
 }
 async function runDiagnostics(event){
-  event?.preventDefault();if(diagnosticsBusy)return;
+  event?.preventDefault();if(diagnosticsBusy||diagnosticsInboxBusy)return;
   diagnosticsError='';
   if(diagnosticsSuite==='checklist')return;
   const suite=diagnosticsSuite,network=suite==='all'||suite==='network';
@@ -548,8 +629,10 @@ async function runDiagnostics(event){
     body[key]=number;
   }
   const context=diagnosticContext();
+  const inboxRequested=page==='diagnostics'||!!diagnosticsInboxLoad||diagnosticsInboxLoaded;
   diagnosticsBusy=true;renderDiagnostics();
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),40000);
+  let completed=null;
   try{
     const result=await api('diagnostics',body,'POST',controller.signal);
     if(typeof result.report!=='string'||!Array.isArray(result.checks))throw Error('The client returned an incomplete diagnostics report.');
@@ -560,8 +643,19 @@ async function runDiagnostics(event){
       if(checks.some(check=>check.status==='warning'))result.summary+=' Review the webview capability warnings below.';
     }
     diagnosticsResult={...result,context};diagnosticsResults.set(suite,diagnosticsResult);
+    // Snapshot the completed run before any inbox request or further navigation.
+    completed={suite,generated_at_ms:result.generated_at_ms,report:diagnosticExportText()};
   }catch(error){diagnosticsError=error.name==='AbortError'?'Tests took too long. Keep ClipClub open and try again.':error.message;}
-  finally{clearTimeout(timeout);diagnosticsBusy=false;renderDiagnostics();}
+  finally{clearTimeout(timeout);renderDiagnostics();}
+  try{
+    if(completed){
+      // Navigation does not cancel consent lookup for this completed snapshot.
+      // Keep the run busy until it is queued so a second run cannot displace it.
+      if(diagnosticsInboxLoad)await diagnosticsInboxLoad;
+      else if(!diagnosticsInboxLoaded&&inboxRequested)await loadDiagnosticInbox();
+      await sendDiagnosticInbox(completed);
+    }
+  }finally{diagnosticsBusy=false;renderDiagnostics();}
 }
 async function copyDiagnostics(){
   const text=$('diagnostics-report').value;if(!text)return;
@@ -822,6 +916,11 @@ $('listen-addresses').addEventListener('click',event=>{const button=event.target
 $('diagnostics-form').addEventListener('submit',runDiagnostics);
 $('copy-diagnostics').addEventListener('click',copyDiagnostics);
 $('save-diagnostics').addEventListener('click',saveDiagnostics);
+$('diagnostics-inbox-form').addEventListener('submit',saveDiagnosticInbox);
+$('send-diagnostics-inbox').addEventListener('click',()=>sendDiagnosticInbox());
+$('retry-diagnostics-inbox').addEventListener('click',retryDiagnosticInbox);
+for(const id of ['diagnostics-inbox-endpoint','diagnostics-inbox-token','diagnostics-inbox-device','diagnostics-inbox-session'])$(id).addEventListener('input',()=>{diagnosticsInboxDirty=true;renderDiagnosticInbox();});
+$('diagnostics-inbox-enabled').addEventListener('change',()=>{diagnosticsInboxDirty=true;renderDiagnosticInbox();});
 $('diagnostics-menu').addEventListener('click',event=>{const button=event.target.closest('[data-diagnostic-suite]');if(button)setDiagnosticsSuite(button.dataset.diagnosticSuite);});
 $('diagnostics-checklist').addEventListener('change',event=>{
   const select=event.target.closest('[data-diagnostic-step]');if(!select)return;

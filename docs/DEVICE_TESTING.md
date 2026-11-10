@@ -2,7 +2,7 @@
 
 Run the same ClipClub build on at least two physical machines. The release targets are Apple Silicon macOS and Linux x86-64; include both when available, plus an older/slower machine or a second display scale. Use disposable test clips with visible motion and audible sound: one MP4/H.264 and one WebM/VP9, plus portrait and landscape clips within the upload limits.
 
-Record the device name, OS version, ClipClub version, network arrangement, and which machine is seeding. Use Diagnostics on each device, mark the hands-on checklist, and save the report before closing the app. Keep a separate report for each network arrangement and direction.
+Record the device name, OS version, ClipClub version, network arrangement, and which machine is seeding. Use Diagnostics on each device and mark the hands-on checklist. With [private inbox sharing](DIAGNOSTICS_INBOX.md) enabled, completed diagnostic runs upload automatically; send the report again after changing checklist results or notes. Otherwise save the report before closing the app. Keep a separate report for each network arrangement and direction, and use the same test-session code on both devices to group their reports.
 
 ## What the submenu checks
 

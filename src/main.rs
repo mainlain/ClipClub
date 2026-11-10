@@ -5,6 +5,7 @@
 mod app;
 mod core;
 mod crypto;
+mod diagnostic_inbox;
 mod diagnostics;
 mod discovery;
 mod http;

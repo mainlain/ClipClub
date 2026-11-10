@@ -54,6 +54,16 @@ function fixture({storage=new Map(),storageBlocked=false,codecSupport={mp4:'prob
   };
 }
 
+const inboxStatus=overrides=>({enabled:false,endpoint:'https://inbox.example',configured:true,device:'Laptop A',session:'wifi-baseline',pending:0,last_sent_at_ms:null,last_report_id:null,error:null,...overrides});
+function inboxResponder(app,status=inboxStatus()){
+  app.context.fetch=async(url,options)=>{
+    app.calls.push({url,options});
+    let result=url==='/api/diagnostics'?app.report:status;
+    if(url==='/api/diagnostics/inbox/reports')result={...status,pending:status.pending+1,id:'a'.repeat(32)};
+    return{ok:true,json:async()=>JSON.parse(JSON.stringify(result))};
+  };
+}
+
 test('diagnostics starts only on request and preserves edited ports and reports across polls',async()=>{
   const app=fixture();
   assert.deepEqual(app.calls.map(call=>call.url),['/api/state']);
@@ -291,4 +301,159 @@ test('blocked local storage keeps checklist usable and clearly offers export',as
   assert.match(exported,/Observed while storage is blocked/);assert.match(exported,/\[FAIL\] Sleep, wake & reconnect/);
   await app.elements.get('copy-diagnostics').listeners.click();assert.equal(app.copied.at(-1),exported);
   assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics').length,0);
+});
+
+test('diagnostic inbox stays opt-in and sends each completed composite report only once',async()=>{
+  const app=fixture();inboxResponder(app);
+  await app.run('loadDiagnosticInbox(true)');
+  await app.run('runDiagnostics()');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,0);
+  app.elements.get('diagnostics-inbox-enabled').checked=true;
+  app.elements.get('diagnostics-inbox-enabled').listeners.change();
+  await app.run('runDiagnostics()');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,0,'an unsaved checkbox must not enable uploads');
+  inboxResponder(app,inboxStatus({enabled:true}));await app.run('loadDiagnosticInbox(true)');
+  app.input('diagnostics-notes','Sound is absent after wake.');
+  await app.run('runDiagnostics()');
+  const sent=app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports');assert.equal(sent.length,1);
+  const body=JSON.parse(sent[0].options.body);
+  assert.deepEqual(Object.keys(body).sort(),['generated_at_ms','report','suite']);
+  assert.equal(body.suite,'all');assert.equal(body.generated_at_ms,app.report.generated_at_ms);
+  assert.match(body.report,/Webview observations:/);assert.match(body.report,/Sound is absent after wake/);
+  assert.match(body.report,/Hands-on device checklist/);
+  app.run('renderDiagnostics();renderDiagnostics();');app.select('device');app.select('all');
+  app.input('diagnostics-notes','Changed later.');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,1);
+  assert.doesNotMatch(body.report,/Changed later/);
+});
+
+test('saving inbox settings clears its key and never persists it in browser storage',async()=>{
+  const app=fixture();inboxResponder(app);await app.run('loadDiagnosticInbox(true)');
+  app.input('diagnostics-inbox-token','upload-secret-value');
+  app.input('diagnostics-inbox-device','Desktop B');app.input('diagnostics-inbox-session','hotspot-2');
+  app.elements.get('diagnostics-inbox-enabled').checked=true;
+  inboxResponder(app,inboxStatus({enabled:true,device:'Desktop B',session:'hotspot-2'}));
+  await app.elements.get('diagnostics-inbox-form').listeners.submit({preventDefault(){}});
+  const config=JSON.parse(app.calls.at(-1).options.body);
+  assert.deepEqual(config,{enabled:true,endpoint:'https://inbox.example',upload_token:'upload-secret-value',device:'Desktop B',session:'hotspot-2'});
+  assert.equal(app.elements.get('diagnostics-inbox-token').value,'');
+  assert.ok([...app.storage.values()].every(value=>!value.includes('upload-secret-value')));
+  assert.match(app.elements.get('diagnostics-inbox-token-help').textContent,/Leave blank to keep it/);
+  await app.run('saveDiagnosticInbox()');
+  assert.equal(Object.hasOwn(JSON.parse(app.calls.at(-1).options.body),'upload_token'),false);
+  assert.ok(!app.elements.get('diagnostics-inbox-status').textContent.includes('upload-secret-value'));
+});
+
+test('inbox polling shares one request and preserves unsaved settings',async()=>{
+  const app=fixture();let finish;
+  app.context.fetch=(url,options)=>{app.calls.push({url,options});return new Promise(resolve=>finish=()=>resolve({ok:true,json:async()=>inboxStatus()}));};
+  const loading=app.run('page="diagnostics";renderDiagnostics();loadDiagnosticInbox(true)');
+  app.run('renderDiagnostics();loadDiagnosticInbox(true)');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox').length,1);
+  app.input('diagnostics-inbox-device','Unsaved nickname');
+  app.input('diagnostics-inbox-token','unsaved-upload-key');
+  finish();await loading;
+  assert.equal(app.elements.get('diagnostics-inbox-device').value,'Unsaved nickname');
+  assert.equal(app.elements.get('diagnostics-inbox-token').value,'unsaved-upload-key');
+  assert.match(app.elements.get('diagnostics-inbox-status').textContent,/Save your changes/);
+  const count=app.calls.length;app.run('page="home";diagnosticsInboxCheckedAt=0;renderDiagnostics()');assert.equal(app.calls.length,count);
+});
+
+test('inbox queue failure preserves the report and remains visible after status polling',async()=>{
+  const app=fixture(),status=inboxStatus({enabled:true});inboxResponder(app,status);await app.run('loadDiagnosticInbox(true)');
+  const normalFetch=app.context.fetch;
+  app.context.fetch=(url,options)=>url==='/api/diagnostics/inbox/reports'?Promise.resolve({ok:false,json:async()=>({error:'The local upload queue is full.'})}):normalFetch(url,options);
+  await app.run('runDiagnostics()');
+  const exported=app.elements.get('diagnostics-report').value;
+  assert.match(exported,/ClipClub diagnostics/);
+  assert.match(app.elements.get('diagnostics-inbox-error').textContent,/queue is full/);
+  assert.match(app.elements.get('diagnostics-inbox-error').textContent,/still available below/);
+  assert.equal(app.elements.get('diagnostics-error').hidden,true,'an upload failure must not mark diagnostic checks failed');
+  inboxResponder(app,status);await app.run('loadDiagnosticInbox(true)');
+  assert.match(app.elements.get('diagnostics-inbox-error').textContent,/queue is full/);
+  await app.elements.get('send-diagnostics-inbox').listeners.click();
+  assert.equal(app.elements.get('diagnostics-inbox-error').hidden,true);
+  assert.equal(app.elements.get('diagnostics-report').value,exported);
+});
+
+test('manual inbox sends include current checklist notes and retry never repeats diagnostics',async()=>{
+  const app=fixture();inboxResponder(app,inboxStatus({enabled:true,pending:2}));await app.run('loadDiagnosticInbox(true)');
+  app.select('checklist');app.step('playback','fail');app.input('diagnostics-notes','Sound missing on Desktop B.');
+  await app.elements.get('send-diagnostics-inbox').listeners.click();
+  const report=JSON.parse(app.calls.at(-1).options.body);
+  assert.equal(report.suite,'checklist');assert.match(report.report,/\[FAIL\] Picture, sound & seeking/);assert.match(report.report,/Sound missing on Desktop B/);
+  assert.equal(app.elements.get('retry-diagnostics-inbox').disabled,false);
+  await app.elements.get('retry-diagnostics-inbox').listeners.click();
+  assert.equal(app.calls.at(-1).url,'/api/diagnostics/inbox/retry');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics').length,0);
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,1);
+});
+
+test('an older inbox poll cannot restore settings after they are saved',async()=>{
+  const app=fixture();inboxResponder(app,inboxStatus({enabled:true}));await app.run('loadDiagnosticInbox(true)');
+  let finish;
+  app.context.fetch=(url,options)=>{
+    app.calls.push({url,options});
+    if(options.method==='GET')return new Promise(resolve=>finish=()=>resolve({ok:true,json:async()=>inboxStatus({enabled:true})}));
+    return Promise.resolve({ok:true,json:async()=>inboxStatus({enabled:false})});
+  };
+  const loading=app.run('loadDiagnosticInbox(true)');
+  app.elements.get('diagnostics-inbox-enabled').checked=false;
+  await app.run('saveDiagnosticInbox()');finish();await loading;
+  assert.equal(app.run('diagnosticsInbox.enabled'),false);
+  assert.equal(app.elements.get('diagnostics-inbox-enabled').checked,false);
+});
+
+test('completed runs await the initial inbox status after navigating away',async()=>{
+  const app=fixture();let finishStatus;
+  app.context.fetch=(url,options)=>{
+    app.calls.push({url,options});
+    if(url==='/api/diagnostics/inbox')return new Promise(resolve=>finishStatus=()=>resolve({ok:true,json:async()=>inboxStatus({enabled:true})}));
+    return Promise.resolve({ok:true,json:async()=>JSON.parse(JSON.stringify(url==='/api/diagnostics'?app.report:inboxStatus({enabled:true,pending:1})))});
+  };
+  app.run('page="diagnostics";renderDiagnostics()');
+  const pending=app.run('runDiagnostics()');app.run('page="home"');
+  await new Promise(setImmediate);
+  assert.equal(app.run('diagnosticsBusy'),true);
+  assert.match(app.elements.get('diagnostics-report').value,/ClipClub diagnostics/);
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,0);
+  finishStatus();await pending;
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,1);
+  assert.equal(app.run('diagnosticsBusy'),false);
+});
+
+test('a completed run awaiting inbox consent blocks another run until its snapshot is queued',async()=>{
+  const app=fixture();let finishStatus;
+  app.context.fetch=(url,options)=>{
+    app.calls.push({url,options});
+    if(url==='/api/diagnostics/inbox')return new Promise(resolve=>finishStatus=()=>resolve({ok:true,json:async()=>inboxStatus({enabled:true})}));
+    return Promise.resolve({ok:true,json:async()=>JSON.parse(JSON.stringify(url==='/api/diagnostics'?app.report:inboxStatus({enabled:true,pending:1})))});
+  };
+  app.run('page="diagnostics";renderDiagnostics()');const pending=app.run('runDiagnostics()');
+  await new Promise(setImmediate);
+  assert.equal(app.elements.get('run-diagnostics').disabled,true);
+  await app.run('runDiagnostics()');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics').length,1);
+  finishStatus();await pending;
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,1);
+  await app.run('runDiagnostics()');
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics').length,2);
+  assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,2);
+});
+
+test('late disabled or unavailable inbox status never implies upload consent',async()=>{
+  for(const unavailable of [false,true]){
+    const app=fixture();let finishStatus;
+    app.context.fetch=(url,options)=>{
+      app.calls.push({url,options});
+      if(url==='/api/diagnostics/inbox')return new Promise(resolve=>finishStatus=()=>resolve({ok:!unavailable,json:async()=>unavailable?{error:'Inbox status could not be loaded.'}:inboxStatus({enabled:false})}));
+      return Promise.resolve({ok:true,json:async()=>JSON.parse(JSON.stringify(app.report))});
+    };
+    app.run('page="diagnostics";renderDiagnostics()');const pending=app.run('runDiagnostics()');app.run('page="home"');
+    await new Promise(setImmediate);finishStatus();await pending;
+    assert.equal(app.calls.filter(call=>call.url==='/api/diagnostics/inbox/reports').length,0);
+    assert.match(app.elements.get('diagnostics-report').value,/ClipClub diagnostics/);
+    assert.equal(app.run('diagnosticsBusy'),false);
+    if(unavailable)assert.match(app.elements.get('diagnostics-inbox-error').textContent,/status could not be loaded/);
+  }
 });

@@ -58,6 +58,19 @@ pub async fn serve(
             "/api/diagnostics",
             post(diagnostics).layer(DefaultBodyLimit::max(1_024)),
         )
+        .route(
+            "/api/diagnostics/inbox",
+            get(diagnostic_inbox_status)
+                .post(diagnostic_inbox_configure)
+                .layer(DefaultBodyLimit::max(8_192)),
+        )
+        .route(
+            "/api/diagnostics/inbox/reports",
+            post(diagnostic_inbox_enqueue).layer(DefaultBodyLimit::max(
+                crate::diagnostic_inbox::MAX_PAYLOAD_BYTES,
+            )),
+        )
+        .route("/api/diagnostics/inbox/retry", post(diagnostic_inbox_retry))
         .route("/api/crypto", get(crypto_status))
         .route("/api/crypto/transaction", post(crypto_transaction))
         .route("/api/crypto/pending", post(crypto_pending))
@@ -178,6 +191,24 @@ async fn diagnostics(
     Json(input): Json<crate::diagnostics::DiagnosticRequest>,
 ) -> Result<Json<crate::diagnostics::DiagnosticReport>, ApiError> {
     Ok(Json(state.app.diagnostics(input).await?))
+}
+async fn diagnostic_inbox_status(State(state): State<HttpState>) -> Json<Value> {
+    Json(state.app.diagnostic_inbox.status().await)
+}
+async fn diagnostic_inbox_configure(
+    State(state): State<HttpState>,
+    Json(input): Json<crate::diagnostic_inbox::Configure>,
+) -> ApiResult {
+    Ok(Json(state.app.diagnostic_inbox.configure(input).await?))
+}
+async fn diagnostic_inbox_enqueue(
+    State(state): State<HttpState>,
+    Json(input): Json<crate::diagnostic_inbox::ReportInput>,
+) -> ApiResult {
+    Ok(Json(state.app.diagnostic_inbox.enqueue(input).await?))
+}
+async fn diagnostic_inbox_retry(State(state): State<HttpState>) -> Json<Value> {
+    Json(state.app.diagnostic_inbox.retry().await)
 }
 async fn logo_png() -> impl IntoResponse {
     (

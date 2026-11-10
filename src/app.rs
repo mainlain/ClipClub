@@ -41,6 +41,7 @@ pub struct App {
     wake: Notify,
     pub shutdown: CancellationToken,
     pub updates: Arc<crate::update::Updater>,
+    pub diagnostic_inbox: Arc<crate::diagnostic_inbox::Inbox>,
     pub p2p_port: u16,
     pub torrent_port: u16,
 }
@@ -159,6 +160,7 @@ impl App {
         let (mesh, mut events) = peer::start(identity.clone(), p2p_port).await?;
         let app = Arc::new(Self {
             updates: Arc::new(crate::update::Updater::new(root.clone())),
+            diagnostic_inbox: crate::diagnostic_inbox::Inbox::open(&root)?,
             crypto: Crypto::open(&root)?,
             root,
             store: Mutex::new(store),
@@ -177,6 +179,7 @@ impl App {
             p2p_port,
             torrent_port,
         });
+        app.diagnostic_inbox.start(app.shutdown.clone());
         // Validate managed files before resuming; never blindly trust saved paths or bytes.
         let library = app.store.lock().await.data.library.clone();
         for (id, _) in library {

@@ -133,6 +133,12 @@ details summary:hover { color: var(--orange); }
 .diagnostics-menu button[aria-pressed="true"] { border-color: var(--green); background: #e7eddf; box-shadow: inset 3px 0 var(--green); }
 .diagnostics-menu button:hover { border-color: #bdcbb0; }
 .diagnostics-context { margin-bottom: 20px; }
+.diagnostics-inbox { border: 1px solid var(--line); border-radius: 5px; padding: 16px; margin: 0 0 20px; }
+.diagnostics-inbox summary { font-size: 12px; font-weight: 500; cursor: pointer; }
+.diagnostics-inbox .diagnostics-ports { max-width: none; }
+.diagnostics-inbox-toggle { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; line-height: 1.6; margin-top: 16px; }
+.diagnostics-inbox-toggle input { width: auto; flex-shrink: 0; margin-top: 3px; accent-color: var(--green); }
+#diagnostics-inbox-status { margin-bottom: 0; overflow-wrap: anywhere; }
 .diagnostics-context .diagnostics-ports { max-width: none; }
 .diagnostics-page select { background: #f3f5ef; border: 1px solid #d5ddcb; border-radius: 4px; padding: 11px 8px; color: var(--ink); width: 100%; font-size: 12px; }
 .diagnostics-form { border: 1px solid var(--line); border-radius: 5px; padding: 18px; margin-top: 22px; }
