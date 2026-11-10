@@ -238,7 +238,7 @@ fn desktop(
     });
     let window = WindowBuilder::new()
         .with_title("clipclub")
-        .with_inner_size(LogicalSize::new(480.0, 620.0))
+        .with_inner_size(LogicalSize::new(420.0, 520.0))
         .with_min_inner_size(LogicalSize::new(360.0, 480.0))
         .build(&event_loop)?;
     let origin = format!("{url}/");

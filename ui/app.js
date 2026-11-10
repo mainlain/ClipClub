@@ -289,6 +289,7 @@ function renderWallet(){
   const crypto=state.crypto;
   restoreTransaction();
   $('balance').textContent=crypto?.wallet?`${fmtTokens(spendableTokenBalance())} ✨`:'— ✨';
+  $('footer-wallet-address').hidden=!crypto?.wallet;$('footer-wallet-address').textContent=crypto?.wallet||'';
   $('reserved-balance').hidden=!queuedRatingCount();$('reserved-balance').textContent=`${fmtTokens(queuedTokenUnits())} ✨ queued · not paid`;
   $('balance').title=crypto?.wallet?`Wallet balance ${fmtTokens(crypto.balance_units)} ✨; available after queued ratings`:'';
   $('connect-wallet').disabled=walletBusy||transactionBusy||rollBusy||busy;
