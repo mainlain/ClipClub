@@ -101,7 +101,6 @@ pub async fn serve(
         .route("/api/update/install", post(update_install))
         .route("/api/remove/{id}", post(remove))
         .route("/api/video/{id}", get(video))
-        .route("/api/torrent/{id}", get(metainfo))
         .layer(DefaultBodyLimit::max((MAX_FILE_BYTES + 10_000) as usize))
         .layer(middleware::from_fn_with_state(state.clone(), security))
         .with_state(state);
@@ -449,29 +448,6 @@ async fn session(State(state): State<HttpState>, Json(input): Json<Session>) -> 
 async fn remove(State(state): State<HttpState>, Path(id): Path<String>) -> ApiResult {
     state.app.remove(&id).await?;
     Ok(Json(json!({"ok":true})))
-}
-async fn metainfo(
-    State(state): State<HttpState>,
-    Path(id): Path<String>,
-) -> Result<Response, ApiError> {
-    let store = state.app.store.lock().await;
-    let clip = store
-        .data
-        .catalog
-        .get(&id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown clip"))?;
-    let torrent = crate::app::prepared(clip)?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/x-bittorrent".to_owned()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}.torrent\"", clip.id),
-            ),
-        ],
-        torrent.bytes,
-    )
-        .into_response())
 }
 async fn video(
     State(state): State<HttpState>,

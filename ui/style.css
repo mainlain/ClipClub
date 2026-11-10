@@ -242,7 +242,6 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
 .transaction-recovery .button { margin-top: 10px; }
 .pending-transaction { margin-top: 20px; padding: 13px; background: #eef0e6; border: 1px solid var(--line); border-radius: 5px; overflow-wrap: anywhere; }
 .pending-transaction p { margin-top: 0; }
-.registered-token { font-size: 10px; align-self: center; color: var(--green); }
 @media (max-width: 590px) {
   .row-actions { flex-wrap: wrap; justify-content: flex-end; }
 }
