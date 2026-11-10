@@ -126,10 +126,27 @@ details summary:hover { color: var(--orange); }
 .diagnostics-page > h1 { font: 400 25px Georgia; margin: 0 0 16px; }
 .diagnostics-page > p { font-size: 12px; }
 .diagnostics-page > .field-help { font-size: 11px; }
-.diagnostics-form { border: 1px solid var(--line); border-radius: 5px; padding: 4px 18px 18px; margin-top: 22px; }
-.diagnostics-form > input { max-width: 330px; }
+.diagnostics-menu { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 22px 0; }
+.diagnostics-menu button { padding: 14px; text-align: left; background: var(--soft); border: 1px solid var(--line); border-radius: 5px; min-width: 0; }
+.diagnostics-menu button strong { display: block; font-size: 12px; font-weight: 500; }
+.diagnostics-menu button span { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.diagnostics-menu button[aria-pressed="true"] { border-color: var(--green); background: #e7eddf; box-shadow: inset 3px 0 var(--green); }
+.diagnostics-menu button:hover { border-color: #bdcbb0; }
+.diagnostics-context { margin-bottom: 20px; }
+.diagnostics-context .diagnostics-ports { max-width: none; }
+.diagnostics-page select { background: #f3f5ef; border: 1px solid #d5ddcb; border-radius: 4px; padding: 11px 8px; color: var(--ink); width: 100%; font-size: 12px; }
+.diagnostics-form { border: 1px solid var(--line); border-radius: 5px; padding: 18px; margin-top: 22px; }
+.diagnostics-form h2, .diagnostics-manual h2 { font-size: 14px; font-weight: 500; margin: 0 0 10px; }
+.diagnostics-form > .field-help { margin: 0; }
+#diagnostics-network-target > input { max-width: 330px; }
 .diagnostics-port-options { margin-top: 18px; }
 .diagnostics-ports { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 420px; }
+.diagnostics-checklist { list-style: none; padding: 0; margin: 16px 0; }
+.diagnostics-checklist li { display: flex; gap: 18px; align-items: flex-start; border-top: 1px solid var(--line); padding: 16px 0; }
+.diagnostics-checklist li > div { flex: 1; min-width: 0; }
+.diagnostics-checklist label { font-size: 12px; font-weight: 500; }
+.diagnostics-checklist p { font-size: 11px; margin: 6px 0 0; }
+.diagnostics-checklist select { width: 112px; flex-shrink: 0; font-size: 11px; }
 .diagnostics-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 20px; }
 #diagnostics-status { flex: 1; min-width: 160px; font-size: 11px; color: var(--muted); line-height: 1.7; }
 .diagnostics-error { font-size: 11px; color: #a34427; overflow-wrap: anywhere; margin-bottom: 0; }
@@ -206,6 +223,10 @@ dialog p { font-size: 12px; margin: 12px 0 0; color: #b3bfa8; overflow-wrap: any
   .row-actions { margin-left: auto; }
 }
 @media (max-width: 400px) {
+  .diagnostics-menu { grid-template-columns: minmax(0, 1fr); }
+  .diagnostics-ports { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .diagnostics-checklist li { flex-wrap: wrap; gap: 10px; }
+  .diagnostics-checklist li > div { flex-basis: 100%; }
   main { padding-left: 20px; padding-right: 20px; }
   body[data-page="home"] main { padding: 20px 20px 26px; }
   .app-footer { padding: 14px 20px 18px; font-size: 9px; }

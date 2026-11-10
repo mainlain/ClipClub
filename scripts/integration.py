@@ -132,18 +132,38 @@ try:
     assert_http_error(lambda: urllib.request.urlopen(unauthenticated), 'Invalid local session')
     assert_http_error(lambda: alice.request('diagnostics', {'peer_ip':'example.com'}))
     assert_http_error(lambda: alice.request('diagnostics', {'peer_ip':'127.0.0.1', 'torrent_port':0}))
+    assert_http_error(lambda: alice.request('diagnostics', {'suite':'unknown'}))
     report = alice.request('diagnostics', {'peer_ip':'127.0.0.1', 'p2p_port':bob.ports[1], 'torrent_port':bob.ports[2]})
-    assert report['generated_at_ms'] > 0 and report['summary'] and report['checks']
+    assert report['suite'] == 'all' and report['generated_at_ms'] > 0 and report['summary'] and report['checks']
+    assert {row['category'] for row in report['checks']} == {'device', 'network', 'media', 'wallet'}, report
     assert alice.identity in report['report'] and str(bob.ports[2]) in report['report']
     assert alice.token not in report['report'] and str(alice.root) not in report['report']
     assert any(row['status'] == 'pass' and str(bob.ports[2]) in row['name'] for row in report['checks']), report
+    # Run the opposite outbound path explicitly: a pass from Alice cannot prove it.
+    reverse = bob.request('diagnostics', {'suite':'network', 'peer_ip':'127.0.0.1', 'p2p_port':alice.ports[1], 'torrent_port':alice.ports[2]})
+    assert reverse['suite'] == 'network' and all(row['category'] == 'network' for row in reverse['checks']), reverse
+    assert any(row['status'] == 'pass' and str(alice.ports[2]) in row['name'] for row in reverse['checks']), reverse
     # The checker must report an unreachable target separately from the working mesh.
     blocked_port = free_port()
     blocked = alice.request('diagnostics', {'peer_ip':'127.0.0.1', 'p2p_port':bob.ports[1], 'torrent_port':blocked_port})
     assert any(row['status'] == 'fail' and str(blocked_port) in row['name'] for row in blocked['checks']), blocked
     assert any(row['name'] == 'Video transfer finding' for row in blocked['checks']), blocked
+    # Non-network suites stay focused even when a supplied peer port is closed.
+    # Both clients have real profile folders and installed ffprobe executables.
+    for client in (alice, bob):
+        for suite in ('device', 'media', 'wallet'):
+            focused = client.request('diagnostics', {'suite':suite, 'peer_ip':'127.0.0.1', 'p2p_port':blocked_port, 'torrent_port':blocked_port})
+            assert focused['suite'] == suite and focused['checks'], focused
+            assert all(row['category'] == suite for row in focused['checks']), focused
+            assert client.token not in focused['report'] and str(client.root) not in focused['report'], focused
+            assert not any('Other device' in row['name'] or 'TCP connection' in row['detail'] for row in focused['checks']), focused
+            if suite == 'device':
+                assert any(row['name'] == 'Profile storage access' and row['status'] == 'pass' for row in focused['checks']), focused
+                assert any(row['name'] == 'Available profile storage' for row in focused['checks']), focused
+            elif suite == 'media':
+                assert any(row['name'] == 'Video validator executable' and row['status'] == 'pass' for row in focused['checks']), focused
     if DIAGNOSTICS_ONLY:
-        print('PASS: real-process diagnostics,local-session protection,input validation,reachable peer ports,unreachable video port,and report privacy.')
+        print('PASS: real-process diagnostic suites,suite isolation,local-session protection,input validation,bidirectional reachable peer ports,unreachable video port,storage access,video validator,and report privacy.')
         print('Integration logs:', WORK)
         sys.exit(0)
     wait_for(lambda: any(peer['id'] == bob.identity for peer in alice.state()['peers']) and any(peer['id'] == alice.identity for peer in bob.state()['peers']), 'automatic mutual discovery')

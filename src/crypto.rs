@@ -548,6 +548,195 @@ impl Crypto {
     pub async fn selected_wallet(&self) -> Option<String> {
         self.journal.lock().await.wallet.clone()
     }
+    /// Inspect wallet readiness and make bounded, read-only RPC calls. This
+    /// deliberately avoids `state()`, which can refresh and persist a roll.
+    pub async fn diagnostic_checks(&self) -> Vec<crate::diagnostics::DiagnosticCheck> {
+        use crate::diagnostics::DiagnosticCheck;
+
+        let mut checks = Vec::new();
+        let (selected_wallet, session, pending, roll, saved_submission) = {
+            let journal = self.journal.lock().await;
+            (
+                journal.wallet.clone(),
+                journal
+                    .rating_session
+                    .as_ref()
+                    .map(|session| (session.ratings.len(), session.status.clone())),
+                journal.pending_transaction.is_some(),
+                journal.roll.as_ref().map(|roll| roll.status.clone()),
+                journal.local_submission.is_some(),
+            )
+        };
+        match tokio::time::timeout(Duration::from_secs(1), self.local_status()).await {
+            Ok(status) if status.get("error").is_some() => checks.push(DiagnosticCheck::new(
+                "wallet",
+                "Built-in wallet",
+                "fail",
+                "Wallet storage could not be inspected. Restart the app and check wallet setup.",
+            )),
+            Ok(status) => {
+                let exists = status["exists"].as_bool().unwrap_or(false);
+                let unlocked = status["unlocked"].as_bool().unwrap_or(false);
+                let selected = selected_wallet.is_some()
+                    && status["address"].as_str() == selected_wallet.as_deref();
+                checks.push(DiagnosticCheck::new(
+                    "wallet",
+                    "Built-in wallet",
+                    if exists && unlocked && selected { "pass" } else { "warning" },
+                    format!(
+                        "Wallet saved: {}; unlocked: {}; saved wallet matches selected account: {}. Unlock and transaction approval must be tested manually on each device; this check never signs or submits a transaction.",
+                        if exists { "yes" } else { "no" },
+                        if unlocked { "yes" } else { "no" },
+                        if selected { "yes" } else { "no" },
+                    ),
+                ));
+            }
+            Err(_) => checks.push(DiagnosticCheck::new(
+                "wallet",
+                "Built-in wallet",
+                "warning",
+                "Wallet storage is busy. Let the current wallet operation finish and rerun this check.",
+            )),
+        }
+        checks.push(DiagnosticCheck::new(
+            "wallet",
+            "Saved wallet activity",
+            if pending || saved_submission || session.as_ref().is_some_and(|(_, status)| status != "draft") {
+                "warning"
+            } else {
+                "info"
+            },
+            format!(
+                "{} Pending transaction: {}; saved signed submission awaiting recovery: {}; roll: {}. This snapshot does not refresh receipts, retry broadcasts, settle ratings, or change saved activity.",
+                session.map(|(count, status)| format!("Rating session: {count} clip(s), {status}.")).unwrap_or_else(|| "No saved rating session.".into()),
+                if pending { "yes" } else { "no" },
+                if saved_submission { "yes" } else { "no" },
+                roll.as_deref().unwrap_or("none"),
+            ),
+        ));
+
+        // Run independent reads concurrently; every read has a five-second
+        // deadline even when a test/client has no reqwest timeout configured.
+        let bounded_rpc = |method, params| async move {
+            tokio::time::timeout(Duration::from_secs(5), self.rpc(method, params))
+                .await
+                .ok()
+                .and_then(Result::ok)
+        };
+        let contract_read = async {
+            match self.contract.as_deref() {
+                Some(contract) => {
+                    let code = bounded_rpc("eth_getCode", json!([contract, "latest"]));
+                    let interface = async {
+                        tokio::time::timeout(Duration::from_secs(5), async {
+                            tokio::try_join!(
+                                self.call("decimals()", ""),
+                                self.call("verifier()", "")
+                            )
+                        })
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                    };
+                    Some(tokio::join!(code, interface))
+                }
+                None => None,
+            }
+        };
+        let (chain, block, contract) = tokio::join!(
+            bounded_rpc("eth_chainId", json!([])),
+            bounded_rpc("eth_getBlockByNumber", json!(["latest", false])),
+            contract_read,
+        );
+        let reported_chain = chain
+            .as_ref()
+            .and_then(Value::as_str)
+            .and_then(|value| parse_hex_u64(value).ok());
+        let correct_chain = reported_chain == Some(self.chain_id);
+        checks.push(DiagnosticCheck::new(
+            "wallet",
+            "Chain RPC identity",
+            if correct_chain { "pass" } else { "fail" },
+            match reported_chain {
+                Some(id) => format!(
+                    "Configured chain: {}; RPC returned chain: {id}. {}",
+                    self.chain_id,
+                    if correct_chain { "The RPC identifies the expected network." } else { "The RPC identifies a different network. Check this device's network configuration before using tokens." },
+                ),
+                None => format!(
+                    "Configured chain: {}. No valid chain identity arrived within five seconds. Check this device's internet access and RPC configuration. Provider URLs and raw errors are omitted from this report.",
+                    self.chain_id,
+                ),
+            },
+        ));
+        let latest = block.as_ref().and_then(|block| {
+            Some((
+                parse_hex_u64(block["number"].as_str()?).ok()?,
+                parse_hex_u64(block["timestamp"].as_str()?).ok()?,
+            ))
+        });
+        checks.push(match latest {
+            Some((number, timestamp)) => {
+                let now = crate::core::current_time_ms() / 1000;
+                let recent = timestamp.saturating_sub(now) <= 30
+                    && now.saturating_sub(timestamp) <= 120;
+                DiagnosticCheck::new(
+                    "wallet",
+                    "RPC latest block and device clock",
+                    if recent && correct_chain { "pass" } else { "warning" },
+                    format!(
+                        "RPC latest block: {number}; block timestamp: {timestamp} Unix seconds; device clock: {now} Unix seconds. {} A single block snapshot does not prove the RPC will keep advancing.",
+                        if !correct_chain { "Chain identity was not verified; interpret this block cautiously." }
+                        else if recent { "Block time is close to this device's clock." }
+                        else { "The block is over two minutes old or over 30 seconds in the future. Compare device clocks and rerun to distinguish clock drift from a stale RPC." },
+                    ),
+                )
+            }
+            None => DiagnosticCheck::new(
+                "wallet",
+                "RPC latest block and device clock",
+                "fail",
+                "No valid latest block number and timestamp arrived within five seconds. RPC freshness and clock agreement could not be checked.",
+            ),
+        });
+        match contract {
+            None => checks.push(DiagnosticCheck::new(
+                "wallet",
+                "Token contract",
+                "warning",
+                "No token contract is configured for this device. Peer discovery and video transfer can still be tested.",
+            )),
+            Some((code, interface)) => {
+                let code_present = code
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .and_then(|code| code.strip_prefix("0x"))
+                    .and_then(|code| hex::decode(code).ok())
+                    .is_some_and(|code| !code.is_empty());
+                let valid_interface = interface.is_some_and(|(decimals, verifier)| {
+                    decimal_word(&decimals).ok().as_deref() == Some("6")
+                        && word_address(&verifier).ok().as_deref()
+                            == Some(match self.chain_id {
+                                4326 => "0x7a53a6efa81c426838fcf4824e6e207923969b36",
+                                6343 => "0x4e1673dcaa38136b5032f27ef93423162af977cc",
+                                _ => "",
+                            })
+                });
+                checks.push(DiagnosticCheck::new(
+                    "wallet",
+                    "Token contract",
+                    if code_present && valid_interface && correct_chain { "pass" } else { "fail" },
+                    format!(
+                        "Configured address has bytecode: {}; expected six token decimals and randomness verifier: {}; expected chain verified: {}. These reads check basic compatibility, not a full contract audit. No token payment was attempted.",
+                        if code_present { "yes" } else { "not verified" },
+                        if valid_interface { "yes" } else { "not verified" },
+                        if correct_chain { "yes" } else { "no" },
+                    ),
+                ));
+            }
+        }
+        checks
+    }
     pub fn peer_commitment(&self, peer: &str) -> String {
         peer_commitment(peer)
     }
@@ -2468,6 +2657,9 @@ mod tests {
         verifier: String,
         receipt: Value,
         canonical_block: String,
+        latest_timestamp: String,
+        bytecode: String,
+        diagnostic_error: bool,
         roll_data: String,
         pending: String,
         beneficiaries: BTreeMap<String, String>,
@@ -2499,6 +2691,9 @@ mod tests {
     fn rpc_result(state: &RpcState, input: &Value) -> Value {
         state.requests.lock().unwrap().push(input.clone());
         let f = state.fixture.lock().unwrap().clone();
+        if f.diagnostic_error {
+            return json!({"jsonrpc":"2.0","id":input["id"],"error":{"message":"Provider rejected https://rpc.example/private?api_key=secret-diagnostic-key"}});
+        }
         if input["method"] == "eth_estimateGas" && f.estimate_error {
             return json!({"jsonrpc":"2.0","id":input["id"],"error":{"message":"Execution reverted"}});
         }
@@ -2508,7 +2703,10 @@ mod tests {
         let result = match input["method"].as_str().unwrap() {
             "eth_chainId" => json!(f.chain),
             "eth_getTransactionReceipt" => f.receipt,
-            "eth_getBlockByNumber" => json!({"hash":f.canonical_block}),
+            "eth_getBlockByNumber" => {
+                json!({"hash":f.canonical_block,"number":"0x10","timestamp":f.latest_timestamp})
+            }
+            "eth_getCode" => json!(f.bytecode),
             "eth_estimateGas" => json!("0x186a0"),
             "eth_gasPrice" => json!("0x3b9aca00"),
             "eth_getTransactionCount" => json!(f.nonce),
@@ -2623,6 +2821,9 @@ mod tests {
                 verifier: "0x4e1673dcAA38136b5032F27ef93423162aF977Cc".into(),
                 receipt: receipt(rating_event()),
                 canonical_block: BLOCK.into(),
+                latest_timestamp: format!("0x{:x}", crate::core::current_time_ms() / 1000),
+                bytecode: "0x60006000".into(),
+                diagnostic_error: false,
                 roll_data: roll_data(WALLET, "1000000", 100, false, 0),
                 pending: "0".into(),
                 beneficiaries: BTreeMap::from([(CLIP.into(), WALLET.into())]),
@@ -2679,6 +2880,144 @@ mod tests {
             transaction_hash: HASH.into(),
             wallet: WALLET.into(),
         }
+    }
+    #[tokio::test]
+    async fn wallet_diagnostics_use_only_reads_and_leave_saved_activity_unchanged() {
+        let m = mock().await;
+        m.crypto.journal.lock().await.roll = Some(ChainRoll {
+            id: "7".into(),
+            status: "pending".into(),
+            multiplier: None,
+            wager_units: "1000000".into(),
+            payout_units: "0".into(),
+            round: 100,
+            transaction_hash: HASH.into(),
+            settlement_hash: None,
+        });
+        let before = serde_json::to_string(&*m.crypto.journal.lock().await).unwrap();
+        let checks = m.crypto.diagnostic_checks().await;
+        for name in [
+            "Chain RPC identity",
+            "RPC latest block and device clock",
+            "Token contract",
+        ] {
+            assert!(
+                checks
+                    .iter()
+                    .any(|check| check.name == name && check.status == "pass"),
+                "{checks:?}"
+            );
+        }
+        assert!(checks.iter().all(|check| check.category == "wallet"));
+        let requests = m.state.requests.lock().unwrap();
+        assert_eq!(requests.len(), 5);
+        assert!(requests.iter().all(|request| matches!(
+            request["method"].as_str(),
+            Some("eth_chainId" | "eth_getBlockByNumber" | "eth_getCode" | "eth_call")
+        )));
+        drop(requests);
+        assert_eq!(
+            serde_json::to_string(&*m.crypto.journal.lock().await).unwrap(),
+            before
+        );
+        assert!(
+            !m.crypto.path.exists(),
+            "diagnostics wrote the wallet journal"
+        );
+        let report = serde_json::to_string(&checks).unwrap();
+        assert!(!report.contains(WALLET));
+        assert!(!report.contains(HASH));
+        assert!(!report.contains(m.crypto.rpc.as_str()));
+    }
+
+    #[tokio::test]
+    async fn wallet_diagnostics_find_wrong_chain_stale_blocks_and_missing_contract() {
+        let m = mock().await;
+        {
+            let mut fixture = m.state.fixture.lock().unwrap();
+            fixture.chain = "0x10e6".into();
+            fixture.latest_timestamp = "0x1".into();
+            fixture.bytecode = "0x".into();
+        }
+        let checks = m.crypto.diagnostic_checks().await;
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "Chain RPC identity" && check.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "RPC latest block and device clock"
+                    && check.status == "warning")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "Token contract" && check.status == "fail")
+        );
+        {
+            let mut fixture = m.state.fixture.lock().unwrap();
+            fixture.chain = "0x18c7".into();
+            fixture.bytecode = "0x6000".into();
+        }
+        let checks = m.crypto.diagnostic_checks().await;
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "RPC latest block and device clock"
+                    && check.detail.contains("over two minutes old")
+                    && check.status == "warning")
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_diagnostics_omit_untrusted_rpc_errors_and_credentials() {
+        let m = mock().await;
+        m.state.fixture.lock().unwrap().diagnostic_error = true;
+        let checks = m.crypto.diagnostic_checks().await;
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "Chain RPC identity" && check.status == "fail")
+        );
+        let report = serde_json::to_string(&checks).unwrap();
+        for private in [
+            "secret-diagnostic-key",
+            "rpc.example",
+            "api_key",
+            m.crypto.rpc.as_str(),
+        ] {
+            assert!(!report.contains(private), "RPC details appeared in report");
+        }
+    }
+
+    #[tokio::test]
+    async fn wallet_diagnostics_finish_when_the_rpc_never_responds() {
+        let mut m = mock().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Arc::get_mut(&mut m.crypto).unwrap().rpc =
+            format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/",
+            post(|| async { std::future::pending::<Json<Value>>().await }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result =
+            tokio::time::timeout(Duration::from_secs(7), m.crypto.diagnostic_checks()).await;
+        task.abort();
+        let checks = result.expect("read-only RPC diagnostics did not respect their deadline");
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "Chain RPC identity" && check.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "Token contract" && check.status == "fail")
+        );
+        assert!(!m.crypto.path.exists());
     }
     #[test]
     fn malformed_unicode_event_data_is_rejected_without_slicing_untrusted_text() {

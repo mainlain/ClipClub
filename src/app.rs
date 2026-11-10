@@ -1,7 +1,7 @@
 use crate::{
     core::{Clip, MAX_FILE_BYTES, MAX_LIBRARY_FILES, RatingReceipt, Store},
     crypto::{ChainRoll, Crypto, SeederDistribution, SeederRecipient},
-    diagnostics::{self, DiagnosticContext, DiagnosticReport, DiagnosticRequest},
+    diagnostics::{self, DiagnosticContext, DiagnosticReport, DiagnosticRequest, DiagnosticSuite},
     media::{self, Limits},
     peer::{self, PeerEvent, PeerHandle},
     torrent::{self, PreparedTorrent, TorrentEngine},
@@ -271,12 +271,13 @@ impl App {
         eprintln!("{message}");
     }
     pub async fn diagnostics(&self, request: DiagnosticRequest) -> Result<DiagnosticReport> {
+        request.validate()?;
         let _running = self.diagnostics_running.try_lock().map_err(|_| {
             anyhow::anyhow!(
                 "Diagnostics are already running. Wait for the current tests to finish."
             )
         })?;
-        let context = {
+        let mut context = {
             // Copy local observations before opening test connections. Network
             // checks must not hold the locks used by playback or peer events.
             let store = self.store.lock().await;
@@ -287,6 +288,11 @@ impl App {
                 .filter(|peer| peer.seen.elapsed() < Duration::from_secs(65))
                 .collect();
             DiagnosticContext {
+                root: self.root.clone(),
+                probe: self.probe.clone(),
+                cached_clips: runtime.temporary.len(),
+                rating_session_active: runtime.session,
+                wallet_checks: vec![],
                 peer_id: self.mesh.peer_id.clone(),
                 p2p_port: self.p2p_port,
                 torrent_port: self.torrent_port,
@@ -311,7 +317,15 @@ impl App {
                     .count(),
             }
         };
-        diagnostics::run(context, self.mesh.diagnostics().await, request).await
+        if request.suite.includes(DiagnosticSuite::Wallet) {
+            context.wallet_checks = self.crypto.diagnostic_checks().await;
+        }
+        let mesh = if request.suite.includes(DiagnosticSuite::Network) {
+            self.mesh.diagnostics().await
+        } else {
+            Err(anyhow::anyhow!("Network suite was not requested"))
+        };
+        diagnostics::run(context, mesh, request).await
     }
     pub async fn announce(&self) {
         let wallet = self.crypto.selected_wallet().await;

@@ -1,4 +1,4 @@
-//! Read-only checks of the running client and bounded TCP reachability probes.
+//! Bounded checks of the running client, temporary storage, and TCP reachability.
 //! TCP probes deliberately send no application data: a reachable socket does
 //! not establish a successful ClipClub or BitTorrent protocol handshake.
 
@@ -10,19 +10,50 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     future::Future,
-    io,
+    io::{self, Read, Seek, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::{Path, PathBuf},
+    process::Stdio,
     time::{Duration, Instant},
 };
-use tokio::net::TcpStream;
+use tokio::{io::AsyncReadExt, net::TcpStream, process::Command};
 
 const MAX_REMOTE_PROBES: usize = 16;
 const PROBE_CONCURRENCY: usize = 8;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSuite {
+    #[default]
+    All,
+    Network,
+    Device,
+    Media,
+    Wallet,
+}
+
+impl DiagnosticSuite {
+    pub fn includes(self, suite: Self) -> bool {
+        self == Self::All || self == suite
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Network => "network",
+            Self::Device => "device",
+            Self::Media => "media",
+            Self::Wallet => "wallet",
+        }
+    }
+}
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiagnosticRequest {
+    #[serde(default)]
+    pub suite: DiagnosticSuite,
     pub peer_ip: Option<Ipv4Addr>,
     pub p2p_port: Option<u16>,
     pub torrent_port: Option<u16>,
@@ -49,6 +80,8 @@ impl DiagnosticRequest {
 }
 
 pub struct DiagnosticContext {
+    pub root: PathBuf,
+    pub probe: PathBuf,
     pub peer_id: String,
     pub p2p_port: u16,
     pub torrent_port: u16,
@@ -59,10 +92,14 @@ pub struct DiagnosticContext {
     pub peer_video_endpoints: Vec<SocketAddr>,
     pub downloading: Option<(u64, u64)>,
     pub recent_download_failures: usize,
+    pub cached_clips: usize,
+    pub rating_session_active: bool,
+    pub wallet_checks: Vec<DiagnosticCheck>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct DiagnosticReport {
+    pub suite: DiagnosticSuite,
     pub generated_at_ms: u64,
     pub summary: String,
     pub checks: Vec<DiagnosticCheck>,
@@ -71,14 +108,21 @@ pub struct DiagnosticReport {
 
 #[derive(Debug, Serialize)]
 pub struct DiagnosticCheck {
+    pub category: &'static str,
     pub name: String,
     pub status: &'static str,
     pub detail: String,
 }
 
 impl DiagnosticCheck {
-    fn new(name: impl Into<String>, status: &'static str, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        category: &'static str,
+        name: impl Into<String>,
+        status: &'static str,
+        detail: impl Into<String>,
+    ) -> Self {
         Self {
+            category,
             name: name.into(),
             status,
             detail: detail.into(),
@@ -240,52 +284,236 @@ fn probe_check(probe: &Probe, result: &Reachability, elapsed: Duration) -> Diagn
         ),
         Reachability::Other(error) => ("fail", format!("TCP connection failed: {error}")),
     };
-    DiagnosticCheck::new(name, status, detail)
+    DiagnosticCheck::new("network", name, status, detail)
 }
 
-/// Performs a finite set of three-second TCP checks. Reports remain useful
-/// when the mesh is stopped or unable to answer its snapshot request.
-pub async fn run(
-    mut context: DiagnosticContext,
-    mesh: Result<PeerDiagnostics>,
-    request: DiagnosticRequest,
-) -> Result<DiagnosticReport> {
-    request.validate()?;
-    // The CLI permits port zero, letting the OS choose a mesh port. The
-    // process's original option remains zero; test/report its actual listener.
-    if context.p2p_port == 0
-        && let Ok(mesh) = &mesh
-        && let Some(port) = mesh.listen_addresses.iter().find_map(|address| {
-            address
-                .parse::<Multiaddr>()
-                .ok()?
-                .iter()
-                .find_map(|part| match part {
-                    Protocol::Tcp(port) if port != 0 => Some(port),
-                    _ => None,
-                })
-        })
-    {
-        context.p2p_port = port;
+/// A blocking filesystem call may finish after the caller's deadline. Keeping
+/// ownership in this worker ensures a late open still reaches cleanup.
+struct TemporaryDiagnosticFile {
+    path: Option<PathBuf>,
+    file: Option<std::fs::File>,
+}
+
+impl Drop for TemporaryDiagnosticFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
-    let generated_at_ms = crate::core::current_time_ms();
-    let mut checks = Vec::new();
+}
+
+async fn storage_round_trip(directory: &Path) -> io::Result<()> {
+    let directory = directory.to_owned();
+    let worker = tokio::task::spawn_blocking(move || {
+        let path = directory.join(format!(
+            ".clipclub-diagnostic-{:032x}",
+            rand::random::<u128>()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        // A failed create_new never gives us ownership of an existing file.
+        let file = options.open(&path)?;
+        let mut temporary = TemporaryDiagnosticFile {
+            path: Some(path.clone()),
+            file: Some(file),
+        };
+        let result = (|| {
+            const CONTENT: &[u8] = b"ClipClub temporary storage diagnostic\n";
+            let file = temporary.file.as_mut().unwrap();
+            file.write_all(CONTENT)?;
+            file.sync_all()?;
+            file.rewind()?;
+            let mut actual = [0; CONTENT.len()];
+            file.read_exact(&mut actual)?;
+            if actual != CONTENT {
+                return Err(io::Error::other("Storage round trip did not match"));
+            }
+            Ok(())
+        })();
+        drop(temporary.file.take());
+        let cleanup = std::fs::remove_file(&path);
+        if cleanup.is_ok() {
+            temporary.path = None;
+        }
+        result.and(cleanup)
+    });
+    match tokio::time::timeout(PROBE_TIMEOUT, worker).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(io::Error::other("Storage worker could not finish")),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Storage test timed out",
+        )),
+    }
+}
+
+async fn device_checks(context: &DiagnosticContext, checks: &mut Vec<DiagnosticCheck>) {
+    let root = context.root.clone();
+    let capacity = match tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tokio::task::spawn_blocking(move || fs2::available_space(root)),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        _ => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Storage capacity query did not finish",
+        )),
+    };
+    checks.push(match capacity {
+        Ok(bytes) => DiagnosticCheck::new(
+            "device",
+            "Available profile storage",
+            if bytes < 128 * 1024 * 1024 { "warning" } else { "pass" },
+            format!(
+                "{} MiB available on the profile volume. Low free space (below 128 MiB) can interrupt downloads or uploads; this is a snapshot and does not reserve space.",
+                bytes / (1024 * 1024)
+            ),
+        ),
+        Err(_) => DiagnosticCheck::new(
+            "device", "Available profile storage", "warning",
+            "The available space on the profile volume could not be read.",
+        ),
+    });
+    let mut tests = Vec::new();
+    for (folder, label) in [
+        ("", "Profile storage access"),
+        ("clips", "Library storage access"),
+        ("cache", "Playback cache storage access"),
+        ("incoming", "Incoming storage access"),
+        ("roll-cache", "Roll cache storage access"),
+    ] {
+        tests.push(async move {
+            let result = storage_round_trip(&context.root.join(folder)).await;
+            (label, result)
+        });
+    }
+    let results = stream::iter(tests).buffered(5).collect::<Vec<_>>().await;
+    for (label, result) in results {
+        checks.push(DiagnosticCheck::new(
+            "device",
+            label,
+            if result.is_ok() { "pass" } else { "fail" },
+            if result.is_ok() {
+                "Created, wrote, synced, read, and deleted a small temporary test file. Saved application files were not opened."
+            } else {
+                "A temporary file could not complete the create/write/read/delete test. Check available storage and this device's profile folder permissions. A timed-out worker continues cleanup when storage responds; a failed cleanup may leave a small .clipclub-diagnostic file."
+            },
+        ));
+    }
+}
+
+async fn validator_version(probe: &Path, timeout: Duration) -> Result<String, &'static str> {
+    let mut child = Command::new(probe)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| "The video validator could not be started. Reinstall this device's matching ClipClub build and check executable permissions.")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("The video validator did not provide version output.")?;
+    let result = tokio::time::timeout(timeout, async {
+        // Do not capture arbitrary executable output in a diagnostic report.
+        let mut output = Vec::new();
+        let mut stdout = stdout.take(4096);
+        let (read, status) = tokio::join!(stdout.read_to_end(&mut output), child.wait());
+        let status =
+            status.map_err(|_| "The video validator could not finish its version check.")?;
+        read.map_err(|_| "The video validator version output could not be read.")?;
+        if !status.success() {
+            return Err("The video validator exited unsuccessfully during its version check.");
+        }
+        let text = String::from_utf8_lossy(&output);
+        let version = text
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("ffprobe version "))
+            .and_then(|value| value.split_whitespace().next())
+            .map(|value| {
+                // Vendor builds can append a website or build path to a
+                // numeric release. Keep only its release number in reports.
+                if value.starts_with(|character: char| character.is_ascii_digit()) {
+                    value
+                        .split(|character: char| !character.is_ascii_digit() && character != '.')
+                        .next()
+                        .unwrap_or_default()
+                        .trim_end_matches('.')
+                } else {
+                    value
+                }
+            })
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 80
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+            })
+            .ok_or("The video validator returned an unrecognized version response.")?;
+        Ok(version.to_owned())
+    })
+    .await;
+    result.unwrap_or(Err(
+        "The video validator did not finish within three seconds. The process was stopped.",
+    ))
+}
+
+async fn media_checks(context: &DiagnosticContext, checks: &mut Vec<DiagnosticCheck>) {
+    checks.push(match validator_version(&context.probe, PROBE_TIMEOUT).await {
+        Ok(version) => DiagnosticCheck::new(
+            "media", "Video validator executable", "pass",
+            format!("ffprobe {version} started and answered on this device. This verifies the validator executable, not playback or decoding in the app's video view."),
+        ),
+        Err(detail) => DiagnosticCheck::new("media", "Video validator executable", "fail", detail),
+    });
     checks.push(DiagnosticCheck::new(
-        "Application",
-        "info",
+        "media",
+        "Clips and downloads",
+        if context.recent_download_failures > 0 { "warning" } else { "info" },
         format!(
-            "ClipClub {} · {}/{} · peer {} · peer port {} · video port {}",
-            env!("CARGO_PKG_VERSION"),
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            context.peer_id,
-            context.p2p_port,
-            context.torrent_port
+            "{} locally seeded clip(s), {} known catalog clip(s), {} ready to view, {} recent failed download(s). {}Remote clips enter the viewing queue only after downloading and validating the video. Receiving metadata does not establish video-port reachability.",
+            context.local_seeded_clips, context.catalog_clips, context.ready_clips,
+            context.recent_download_failures,
+            context.downloading.map(|(downloaded, total)| format!("Current download: {downloaded}/{total} bytes. ")).unwrap_or_default(),
         ),
     ));
-    match &mesh {
+    checks.push(DiagnosticCheck::new(
+        "media", "Playback session and cache", "info",
+        format!(
+            "Rating playback session is {}; {} temporary clip(s) currently managed in the playback cache. Open Rate to view the queue. Downloads prefetch while the app is open. Check actual picture, audio, seeking, and resizing on each device using the same MP4 and WebM clips.",
+            if context.rating_session_active { "active" } else { "inactive" }, context.cached_clips,
+        ),
+    ));
+    checks.push(DiagnosticCheck::new(
+        "media", "Accepted video limits", "info",
+        format!(
+            "MP4 and WebM; up to {} bytes, {} seconds, and {} pixels per dimension. A successful upload validation does not guarantee this device's webview supports the video's codec.",
+            crate::core::MAX_FILE_BYTES, crate::core::MAX_DURATION_SECONDS, crate::core::MAX_DIMENSION,
+        ),
+    ));
+}
+
+async fn network_checks(
+    context: &DiagnosticContext,
+    mesh: &Result<PeerDiagnostics>,
+    request: &DiagnosticRequest,
+    checks: &mut Vec<DiagnosticCheck>,
+) {
+    match mesh {
         Ok(mesh) => {
             checks.push(DiagnosticCheck::new(
+                "network",
                 "mDNS local discovery",
                 if mesh.mdns_enabled && !mesh.mdns_endpoints.is_empty() {
                     "pass"
@@ -304,6 +532,7 @@ pub async fn run(
                 },
             ));
             checks.push(DiagnosticCheck::new(
+                "network",
                 "Authenticated peer mesh",
                 if mesh.authenticated_peers.is_empty() { "warning" } else { "pass" },
                 format!(
@@ -312,6 +541,7 @@ pub async fn run(
                 ),
             ));
             checks.push(DiagnosticCheck::new(
+                "network",
                 "Peer messages since app startup",
                 "info",
                 format!(
@@ -320,6 +550,7 @@ pub async fn run(
                 ),
             ));
             checks.push(DiagnosticCheck::new(
+                "network",
                 "Internet discovery",
                 "info",
                 if mesh.internet_discovery_running {
@@ -330,26 +561,16 @@ pub async fn run(
             ));
         }
         Err(error) => checks.push(DiagnosticCheck::new(
+            "network",
             "Peer mesh snapshot",
             "fail",
             format!("Could not inspect the running mesh: {error:#}"),
         )),
     }
-    checks.push(DiagnosticCheck::new(
-        "Clips and downloads",
-        if context.recent_download_failures > 0 { "warning" } else { "info" },
-        format!(
-            "{} locally seeded clip(s), {} known catalog clip(s), {} ready to view, {} recent failed download(s). {}Remote clips enter the viewing queue only after downloading and validating the video. Receiving metadata does not establish video-port reachability.",
-            context.local_seeded_clips,
-            context.catalog_clips,
-            context.ready_clips,
-            context.recent_download_failures,
-            context.downloading.map(|(downloaded, total)| format!("Current download: {downloaded}/{total} bytes. ")).unwrap_or_default(),
-        ),
-    ));
-    let targets = probes(&context, mesh.as_ref().ok(), &request);
+    let targets = probes(context, mesh.as_ref().ok(), request);
     if targets.iter().all(|target| target.local) {
         checks.push(DiagnosticCheck::new(
+            "network",
             "Other device TCP tests",
             "warning",
             "No remote endpoint is available to test. Enter the other device's IPv4 address to test its peer mesh and video ports even when discovery fails.",
@@ -380,10 +601,74 @@ pub async fn run(
     );
     if failed_video {
         checks.push(DiagnosticCheck::new(
+            "network",
             "Video transfer finding",
             "warning",
             "At least one remote video port is unreachable from this device. Its clips may be discovered but never appear in the viewing queue. Run diagnostics on both devices and compare directions before changing firewall rules.",
         ));
+    }
+}
+
+/// Runs only the requested suites with bounded storage, validator, and TCP
+/// checks. Reports remain useful when the mesh cannot provide a snapshot.
+pub async fn run(
+    mut context: DiagnosticContext,
+    mesh: Result<PeerDiagnostics>,
+    request: DiagnosticRequest,
+) -> Result<DiagnosticReport> {
+    request.validate()?;
+    // The CLI permits port zero, letting the OS choose a mesh port. The
+    // process's original option remains zero; test/report its actual listener.
+    if context.p2p_port == 0
+        && let Ok(mesh) = &mesh
+        && let Some(port) = mesh.listen_addresses.iter().find_map(|address| {
+            address
+                .parse::<Multiaddr>()
+                .ok()?
+                .iter()
+                .find_map(|part| match part {
+                    Protocol::Tcp(port) if port != 0 => Some(port),
+                    _ => None,
+                })
+        })
+    {
+        context.p2p_port = port;
+    }
+    let generated_at_ms = crate::core::current_time_ms();
+    let mut checks = Vec::new();
+    checks.push(DiagnosticCheck::new(
+        if request.suite == DiagnosticSuite::All {
+            "device"
+        } else {
+            request.suite.name()
+        },
+        "Application",
+        "info",
+        format!(
+            "ClipClub {} · {}/{} · peer {} · peer port {} · video port {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            context.peer_id,
+            if context.p2p_port == 0 {
+                "automatic (see Discovery & peers)".into()
+            } else {
+                context.p2p_port.to_string()
+            },
+            context.torrent_port
+        ),
+    ));
+    if request.suite.includes(DiagnosticSuite::Device) {
+        device_checks(&context, &mut checks).await;
+    }
+    if request.suite.includes(DiagnosticSuite::Media) {
+        media_checks(&context, &mut checks).await;
+    }
+    if request.suite.includes(DiagnosticSuite::Network) {
+        network_checks(&context, &mesh, &request, &mut checks).await;
+    }
+    if request.suite.includes(DiagnosticSuite::Wallet) {
+        checks.append(&mut context.wallet_checks);
     }
     let failures = checks.iter().filter(|check| check.status == "fail").count();
     let warnings = checks
@@ -397,21 +682,24 @@ pub async fn run(
     } else if warnings > 0 {
         format!("Checks completed with {warnings} warning(s). Review the observations below.")
     } else {
-        "Checks completed. TCP reachability alone does not verify discovery or video playback."
-            .into()
+        "Checks completed. Review each observation and finish the physical-device checklist.".into()
     };
     let mut report = format!(
-        "ClipClub diagnostics\nReport time (Unix milliseconds): {generated_at_ms}\n{summary}\n\n"
+        "ClipClub diagnostics\nSuite: {}\nReport time (Unix milliseconds): {generated_at_ms}\n{summary}\n\n",
+        request.suite.name()
     );
     for check in &checks {
         report.push_str(&format!(
-            "[{}] {}\n{}\n\n",
+            "[{}] {} / {}\n{}\n\n",
             check.status.to_uppercase(),
+            check.category,
             check.name,
             check.detail
         ));
     }
-    if let Ok(mesh) = &mesh {
+    if request.suite.includes(DiagnosticSuite::Network)
+        && let Ok(mesh) = &mesh
+    {
         report.push_str("Current mesh listen addresses:\n");
         for address in &mesh.listen_addresses {
             report.push_str(&format!("  {address}\n"));
@@ -445,6 +733,7 @@ pub async fn run(
     }
     report.push_str("\nThese checks do not change firewall/router settings, verify remote protocols, or measure reachability in the reverse direction. Run this report on both devices. Reports contain peer identities and IP addresses; no wallet secrets or profile contents are included.\n");
     Ok(DiagnosticReport {
+        suite: request.suite,
         generated_at_ms,
         summary,
         checks,
@@ -458,6 +747,11 @@ mod tests {
 
     fn context() -> DiagnosticContext {
         DiagnosticContext {
+            root: PathBuf::from("/missing-clipclub-diagnostic-test-root"),
+            probe: PathBuf::from("/missing-clipclub-diagnostic-test-ffprobe"),
+            cached_clips: 0,
+            rating_session_active: false,
+            wallet_checks: vec![],
             peer_id: "local-peer".into(),
             p2p_port: 42931,
             torrent_port: 42932,
@@ -500,9 +794,193 @@ mod tests {
             r#"{"peer_ip":"example.com"}"#,
             r#"{"p2p_port":65536}"#,
             r#"{"command":"shell"}"#,
+            r#"{"suite":"unknown"}"#,
         ] {
             assert!(serde_json::from_str::<DiagnosticRequest>(input).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn focused_suites_do_not_probe_network_or_include_other_categories() {
+        for suite in [
+            DiagnosticSuite::Device,
+            DiagnosticSuite::Media,
+            DiagnosticSuite::Wallet,
+        ] {
+            let mut context = context();
+            context.p2p_port = 0;
+            context.wallet_checks.push(DiagnosticCheck::new(
+                "wallet",
+                "Wallet observation",
+                "info",
+                "Read only",
+            ));
+            let report = run(
+                context,
+                Err(anyhow::anyhow!(
+                    "private error text must not reach another suite"
+                )),
+                DiagnosticRequest {
+                    suite,
+                    peer_ip: Some(Ipv4Addr::LOCALHOST),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(report.suite, suite);
+            assert!(
+                report
+                    .report
+                    .contains("peer port automatic (see Discovery & peers)")
+            );
+            assert!(
+                report
+                    .checks
+                    .iter()
+                    .all(|check| check.category == suite.name())
+            );
+            assert!(!report.report.contains("private error text"));
+            assert!(!report.report.contains("Current mesh listen addresses"));
+            assert!(!report.checks.iter().any(
+                |check| check.name.contains("listener") || check.name.contains("Other device")
+            ));
+            assert!(!report.report.contains("/missing-clipclub"));
+            assert!(
+                report
+                    .checks
+                    .iter()
+                    .any(|check| check.name == "Wallet observation")
+                    == (suite == DiagnosticSuite::Wallet)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_checks_preserve_saved_files_and_remove_temporary_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut context = context();
+        context.root = directory.path().to_owned();
+        for folder in ["", "clips", "cache", "incoming", "roll-cache"] {
+            let path = directory.path().join(folder);
+            tokio::fs::create_dir_all(&path).await.unwrap();
+            tokio::fs::write(path.join("saved-file"), b"preserve me")
+                .await
+                .unwrap();
+        }
+        let mut checks = vec![];
+        device_checks(&context, &mut checks).await;
+        assert_eq!(checks.len(), 6);
+        assert!(
+            checks
+                .iter()
+                .all(|check| check.status == "pass" || check.name == "Available profile storage")
+        );
+        for folder in ["", "clips", "cache", "incoming", "roll-cache"] {
+            let path = directory.path().join(folder);
+            assert_eq!(
+                tokio::fs::read(path.join("saved-file")).await.unwrap(),
+                b"preserve me"
+            );
+            let entries: Vec<_> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert!(
+                entries
+                    .iter()
+                    .all(|name| !name.to_string_lossy().starts_with(".clipclub-diagnostic-"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_errors_are_actionable_without_exposing_local_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut context = context();
+        // A regular file cannot serve as a profile directory, even when tests run as root.
+        context.root = directory.path().join("private-profile-name");
+        tokio::fs::write(&context.root, b"preserve me")
+            .await
+            .unwrap();
+        let mut checks = vec![];
+        device_checks(&context, &mut checks).await;
+        assert_eq!(
+            checks.iter().filter(|check| check.status == "fail").count(),
+            5
+        );
+        assert!(
+            checks
+                .iter()
+                .all(|check| !check.detail.contains("private-profile-name"))
+        );
+        assert_eq!(tokio::fs::read(context.root).await.unwrap(), b"preserve me");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn validator_check_runs_bounded_processes_and_reports_only_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let probe = directory.path().join("private-executable-name");
+        async fn script(path: &Path, body: &str) {
+            tokio::fs::write(path, format!("#!/bin/sh\n{body}\n"))
+                .await
+                .unwrap();
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .await
+                .unwrap();
+        }
+        script(
+            &probe,
+            "printf 'ffprobe version 9.1.2-test Copyright\\nprivate config path\\n'",
+        )
+        .await;
+        assert_eq!(
+            validator_version(&probe, PROBE_TIMEOUT).await.unwrap(),
+            "9.1.2"
+        );
+        script(
+            &probe,
+            "printf 'ffprobe version 9.0.2-https://www.martin-riedl.de Copyright\\nprivate config path\\n'",
+        )
+        .await;
+        assert_eq!(
+            validator_version(&probe, PROBE_TIMEOUT).await.unwrap(),
+            "9.0.2"
+        );
+        script(&probe, "printf 'ffprobe version /private/path\\n'").await;
+        assert!(
+            validator_version(&probe, PROBE_TIMEOUT)
+                .await
+                .unwrap_err()
+                .contains("unrecognized")
+        );
+        script(&probe, "exit 2").await;
+        assert!(
+            validator_version(&probe, PROBE_TIMEOUT)
+                .await
+                .unwrap_err()
+                .contains("unsuccessfully")
+        );
+        script(&probe, "exec sleep 30").await;
+        let start = Instant::now();
+        assert!(
+            validator_version(&probe, Duration::from_millis(30))
+                .await
+                .unwrap_err()
+                .contains("did not finish")
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(
+            !validator_version(
+                &directory.path().join("missing-private-executable"),
+                PROBE_TIMEOUT
+            )
+            .await
+            .unwrap_err()
+            .contains("private")
+        );
     }
 
     #[test]
@@ -522,6 +1000,7 @@ mod tests {
             peer_ip: Some("192.168.1.88".parse().unwrap()),
             p2p_port: Some(15000),
             torrent_port: Some(15001),
+            ..Default::default()
         };
         let targets = probes(&context(), Some(&mesh), &request);
         assert_eq!(targets.len(), MAX_REMOTE_PROBES + 2);
@@ -582,6 +1061,7 @@ mod tests {
             peer_ip: Some(Ipv4Addr::LOCALHOST),
             p2p_port: Some(port),
             torrent_port: Some(closed_port),
+            ..Default::default()
         };
         let mesh = PeerDiagnostics {
             mdns_requested: true,

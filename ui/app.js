@@ -10,6 +10,27 @@ let refreshVersion=0;
 let navigationQueue=Promise.resolve(),sessionToggleBusy=false,ratingRecoveryState=null;
 let diagnosticsResult=null,diagnosticsBusy=false,diagnosticsError='',diagnosticsPortsReady=false;
 const diagnosticsPortEdits=new Set();
+let diagnosticsSuite='all',diagnosticsNotesLoaded=false,diagnosticsNotesSaved=true;
+const diagnosticsResults=new Map(),diagnosticsChecklistResults={};
+const diagnosticSuites={
+  all:{title:'All checks',help:'Run a baseline before testing another device or network. Checks profile access, media tools, peers, and the configured chain without sending transactions.'},
+  device:{title:'Device & storage',help:'Compare app builds, platform, available disk space, and profile read/write access. A temporary test file is removed after the check.'},
+  network:{title:'Discovery & peers',help:'Inspect discovery and authenticated peers, then test TCP listeners. Run on both devices to compare directions; reachable TCP alone does not prove a video transfer.'},
+  media:{title:'Video & playback',help:'Check the media tool, download queue, and codecs reported by this webview. Use the checklist to verify real picture, sound, seeking, and transfers.'},
+  wallet:{title:'Wallet & chain',help:'Inspect local wallet and pending activity, then make read-only RPC checks against the configured chain. These tests do not sign or send transactions.'},
+  checklist:{title:'Device checklist',help:'Record the behavior you observed on this device.'},
+};
+const diagnosticSteps=[
+  {id:'discovery',title:'Discover each other',detail:'On the same network, open both apps and wait at least 15 seconds. Confirm both show a connected peer. Record the other device and network.'},
+  {id:'transfer-out',title:'Transfer A → B',detail:'Upload a small MP4 on this device. On the other device, open Rate and wait for the clip to download and play. TCP reachability alone is insufficient.'},
+  {id:'transfer-in',title:'Transfer B → A',detail:'Upload a different clip on the other device. Confirm this device downloads it and plays it from Rate. Repeat using WebM.'},
+  {id:'playback',title:'Picture, sound & seeking',detail:'Play MP4/H.264 + AAC and WebM/VP9 + Opus clips with known audio. Check sound, seeking, loop, pause/resume, and fullscreen. Record codec-specific failures.'},
+  {id:'layout',title:'Window, display & keyboard',detail:'Resize to a narrow window, try display scaling or another monitor, and navigate menus by keyboard. Check focus, Escape, video controls, and that text stays readable.'},
+  {id:'resume',title:'Sleep, wake & reconnect',detail:'Let this device sleep, wake it, and reopen Rate. Reconnect Wi-Fi or switch to a hotspot. Confirm peers reconnect and a new clip transfers; rerun network checks.'},
+  {id:'restart',title:'Relaunch & library',detail:'Quit and reopen the app. Confirm uploaded clips resume seeding and another device can download a new clip. Confirm saved rating drafts remain available.'},
+  {id:'wallet',title:'Wallet unlock & cancellation',detail:'After relaunch, confirm the wallet starts locked. Check wrong-password rejection and correct unlock. If a transaction is prepared, review details and cancel; confirm nothing is sent.'},
+  {id:'offline',title:'Offline & recovery',detail:'Disconnect networking and check that menus stay usable and errors are clear. Reconnect, rerun diagnostics, and confirm a fresh transfer succeeds.'},
+];
 async function api(path, body, method='POST', signal) {
   const options={method,headers:{'x-clipcrop-token':token}};
   if(signal)options.signal=signal;
@@ -407,69 +428,152 @@ function navigate(next){
     await refresh();
   });
 }
+function loadDiagnosticNotes(){
+  if(diagnosticsNotesLoaded)return;
+  diagnosticsNotesLoaded=true;
+  try{
+    const saved=JSON.parse(window.localStorage?.getItem('clipclub-diagnostic-notes')||'null');
+    if(!saved||typeof saved!=='object')return;
+    if(typeof saved.device==='string')$('diagnostics-device-label').value=saved.device.slice(0,80);
+    if(['unspecified','same-wifi','wired','hotspot','different-networks','offline'].includes(saved.network))$('diagnostics-network-condition').value=saved.network;
+    if(typeof saved.notes==='string')$('diagnostics-notes').value=saved.notes.slice(0,2000);
+    for(const step of diagnosticSteps)if(['pass','fail','skip'].includes(saved.steps?.[step.id]))diagnosticsChecklistResults[step.id]=saved.steps[step.id];
+  }catch{diagnosticsNotesSaved=false;}
+}
+function saveDiagnosticNotes(){
+  try{
+    if(!window.localStorage)throw Error('Storage unavailable');
+    window.localStorage.setItem('clipclub-diagnostic-notes',JSON.stringify({device:$('diagnostics-device-label').value.slice(0,80),network:$('diagnostics-network-condition').value,notes:$('diagnostics-notes').value.slice(0,2000),steps:diagnosticsChecklistResults}));
+    diagnosticsNotesSaved=true;
+  }catch{diagnosticsNotesSaved=false;}
+  renderDiagnostics();
+}
+function setDiagnosticsSuite(suite){
+  if(diagnosticsBusy||!Object.hasOwn(diagnosticSuites,suite))return;
+  diagnosticsSuite=suite;diagnosticsResult=diagnosticsResults.get(suite)||null;diagnosticsError='';renderDiagnostics();
+}
+function clientDiagnosticChecks(suite){
+  const checks=[];
+  if(suite==='all'||suite==='device'){
+    const width=window.innerWidth,height=window.innerHeight,scale=window.devicePixelRatio;
+    checks.push({category:'device',name:'Webview & display',status:'info',detail:`${navigator.userAgent||'Webview identity unavailable'}. Viewport: ${width||'?'} × ${height||'?'} CSS pixels; pixel ratio ${scale||'?'}. Resize and display scaling still need a visual check.`});
+  }
+  if(suite==='all'||suite==='media'){
+    const player=$('player');
+    for(const [name,mime] of [['MP4 · H.264 + AAC','video/mp4; codecs="avc1.42E01E, mp4a.40.2"'],['WebM · VP9 + Opus','video/webm; codecs="vp9, opus"']]){
+      let support='';try{support=player.canPlayType?.(mime)||'';}catch{}
+      checks.push({category:'media',name:`Playback capability · ${name}`,status:support?'info':'warning',detail:support?`The webview reports “${support}” support. Confirm picture, sound, and seeking with a real clip; this does not test decoding.`:'The webview does not advertise support for this codec combination. Try a known sample and record the outcome in Device checklist.'});
+    }
+    const mediaError=player.error;
+    checks.push({category:'media',name:'Current rating player',status:mediaError?'warning':'info',detail:mediaError?`The player reports media error ${mediaError.code}: ${{1:'playback aborted',2:'network error',3:'decode error',4:'source or codec unsupported'}[mediaError.code]||'unknown error'}. Record the clip and reproduction steps.`:`${player.videoWidth||0} × ${player.videoHeight||0} decoded pixels; ready state ${Number(player.readyState)||0}. No current player error is reported. This snapshot does not establish successful playback.`});
+  }
+  return checks;
+}
+function diagnosticChecklistText(){
+  const labels={pass:'PASS',fail:'FAIL',skip:'SKIPPED'};
+  return 'Hands-on device checklist (manually recorded):\n'+diagnosticSteps.map(step=>`[${labels[diagnosticsChecklistResults[step.id]]||'NOT TESTED'}] ${step.title}`).join('\n');
+}
+function diagnosticContext(){
+  const networks={'same-wifi':'Same Wi-Fi',wired:'Ethernet / mixed wired and Wi-Fi',hotspot:'Phone hotspot','different-networks':'Different networks',offline:'Offline'};
+  return {device:$('diagnostics-device-label').value.trim().slice(0,80)||'Not recorded',network:networks[$('diagnostics-network-condition').value]||'Not recorded'};
+}
+function diagnosticExportText(){
+  if(!diagnosticsResult&&diagnosticsSuite!=='checklist')return '';
+  const current=diagnosticContext(),{device,network}=diagnosticsResult?.context||current;
+  const notes=$('diagnostics-notes').value.trim().slice(0,2000);
+  const header=`Test device: ${device}\nTest network: ${network}\nExported: ${new Date().toISOString()}\n\n`;
+  return header+(diagnosticsResult?diagnosticsResult.report:'ClipClub hands-on device test report\nNo automated checks are included in this checklist export.\n')+`\nChecklist device: ${current.device}\nChecklist network: ${current.network}\n`+diagnosticChecklistText()+'\n\nTest notes:\n'+(notes||'None recorded.')+'\n';
+}
 function renderDiagnostics(){
+  loadDiagnosticNotes();
   if(state&&!diagnosticsPortsReady){
     for(const [id,port] of [['diagnostics-p2p-port',state.p2p_port||42931],['diagnostics-torrent-port',state.torrent_port||42932]]){
       if(!diagnosticsPortEdits.has(id))$(id).value=String(port);
     }
     diagnosticsPortsReady=true;
   }
-  for(const id of ['diagnostics-peer','diagnostics-p2p-port','diagnostics-torrent-port','run-diagnostics'])$(id).disabled=diagnosticsBusy;
+  const manual=diagnosticsSuite==='checklist',network=diagnosticsSuite==='all'||diagnosticsSuite==='network';
+  $('diagnostics-form').hidden=manual;$('diagnostics-manual').hidden=!manual;
+  $('diagnostics-network-target').hidden=!network;
+  $('diagnostics-suite-title').textContent=diagnosticSuites[diagnosticsSuite].title;
+  $('diagnostics-suite-help').textContent=diagnosticSuites[diagnosticsSuite].help;
+  document.querySelectorAll('[data-diagnostic-suite]').forEach(button=>{button.setAttribute('aria-pressed',String(button.dataset.diagnosticSuite===diagnosticsSuite));button.disabled=diagnosticsBusy;});
+  for(const id of ['diagnostics-peer','diagnostics-p2p-port','diagnostics-torrent-port'])$(id).disabled=diagnosticsBusy||!network;
+  $('run-diagnostics').disabled=diagnosticsBusy;
   $('run-diagnostics').textContent=diagnosticsBusy?'Testing…':'Run tests';
   $('diagnostics-form').setAttribute?.('aria-busy',String(diagnosticsBusy));
-  $('diagnostics-status').textContent=diagnosticsBusy?'Checking discovery and TCP connectivity…':diagnosticsError?diagnosticsResult?'Tests could not complete. The previous report is shown below.':'Tests could not complete.':diagnosticsResult?.summary||'Ready to test.';
+  $('diagnostics-status').textContent=diagnosticsBusy?`Running ${diagnosticSuites[diagnosticsSuite].title.toLowerCase()}…`:diagnosticsError?diagnosticsResult?'Tests could not complete. The previous report is shown below.':'Tests could not complete.':diagnosticsResult?.summary||'Ready to test.';
   $('diagnostics-error').hidden=!diagnosticsError;$('diagnostics-error').textContent=diagnosticsError;
-  $('diagnostics-results').hidden=!diagnosticsResult;
-  $('copy-diagnostics').disabled=!diagnosticsResult;$('save-diagnostics').disabled=!diagnosticsResult;
-  if(!diagnosticsResult)return;
-  const generated=new Date(diagnosticsResult.generated_at_ms);
-  $('diagnostics-time').textContent=Number.isFinite(generated.getTime())?generated.toLocaleString():'';
+  $('diagnostics-results').hidden=!diagnosticsResult&&!manual;
+  $('copy-diagnostics').disabled=!diagnosticsResult&&!manual;$('save-diagnostics').disabled=!diagnosticsResult&&!manual;
+  $('diagnostics-results-title').textContent=manual?'Checklist report':`${diagnosticSuites[diagnosticsSuite].title} results`;
+  $('diagnostics-notes-status').textContent=diagnosticsNotesSaved?'Export your checklist and notes before quitting or starting a new test pass.':'Local saving is unavailable. Keep this window open and copy or save your report.';
+  if(manual){
+    const markup=diagnosticSteps.map(step=>`<li><div><label for="diagnostic-step-${step.id}">${esc(step.title)}</label><p>${esc(step.detail)}</p></div><select id="diagnostic-step-${step.id}" data-diagnostic-step="${step.id}" aria-label="${esc(step.title)} result">${[['','Not tested'],['pass','Passed'],['fail','Failed'],['skip','Skipped']].map(([value,label])=>`<option value="${value}"${(diagnosticsChecklistResults[step.id]||'')===value?' selected':''}>${label}</option>`).join('')}</select></li>`).join('');
+    if($('diagnostics-checklist').innerHTML!==markup)$('diagnostics-checklist').innerHTML=markup;
+    const values=Object.values(diagnosticsChecklistResults),tested=values.filter(value=>value==='pass'||value==='fail').length;
+    $('diagnostics-checklist-progress').textContent=`${tested} / ${diagnosticSteps.length} tested · ${values.filter(value=>value==='fail').length} failed · ${values.filter(value=>value==='skip').length} skipped`;
+  }
+  if(!diagnosticsResult&&!manual)return;
+  const generated=diagnosticsResult?new Date(diagnosticsResult.generated_at_ms):null;
+  $('diagnostics-time').textContent=generated&&Number.isFinite(generated.getTime())?generated.toLocaleString():'';
   const labels={pass:'Passed',warning:'Check',fail:'Failed',info:'Info'};
-  const markup=diagnosticsResult.checks.map(check=>{
+  const markup=(diagnosticsResult?.checks||[]).map(check=>{
     const status=Object.hasOwn(labels,check.status)?check.status:'info';
     return `<li class="diagnostics-check diagnostics-${status}"><span class="diagnostics-badge">${labels[status]}</span><div><h3>${esc(check.name)}</h3><p>${esc(check.detail)}</p></div></li>`;
   }).join('');
   if($('diagnostics-checks').innerHTML!==markup)$('diagnostics-checks').innerHTML=markup;
-  if($('diagnostics-report').value!==diagnosticsResult.report)$('diagnostics-report').value=diagnosticsResult.report;
+  // Keep the generated export stable across routine state polling.
+  const exportText=diagnosticExportText(),prior=$('diagnostics-report').value;
+  if(prior.replace(/^Exported:.*$/m,'')!==exportText.replace(/^Exported:.*$/m,''))$('diagnostics-report').value=exportText;
 }
 async function runDiagnostics(event){
   event?.preventDefault();if(diagnosticsBusy)return;
   diagnosticsError='';
-  const peer=$('diagnostics-peer').value.trim(),body={};
-  if(peer){
+  if(diagnosticsSuite==='checklist')return;
+  const suite=diagnosticsSuite,network=suite==='all'||suite==='network';
+  const peer=$('diagnostics-peer').value.trim(),body={suite};
+  if(network&&peer){
     const parts=peer.split('.');
     if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255)){
       diagnosticsError='Enter the other device’s IPv4 address, such as 192.168.1.86.';renderDiagnostics();$('diagnostics-peer').focus?.();return;
     }
     body.peer_ip=parts.map(Number).join('.');
   }
-  for(const [key,id] of [['p2p_port','diagnostics-p2p-port'],['torrent_port','diagnostics-torrent-port']]){
+  for(const [key,id] of network?[['p2p_port','diagnostics-p2p-port'],['torrent_port','diagnostics-torrent-port']]:[]){
     const text=$(id).value.trim(),number=Number(text);
     if(!/^\d+$/.test(text)||!Number.isInteger(number)||number<1||number>65535){
       diagnosticsError='Use TCP port numbers between 1 and 65535.';renderDiagnostics();$(id).focus?.();return;
     }
     body[key]=number;
   }
+  const context=diagnosticContext();
   diagnosticsBusy=true;renderDiagnostics();
-  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),25000);
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),40000);
   try{
     const result=await api('diagnostics',body,'POST',controller.signal);
     if(typeof result.report!=='string'||!Array.isArray(result.checks))throw Error('The client returned an incomplete diagnostics report.');
-    diagnosticsResult=result;
+    const checks=clientDiagnosticChecks(suite);
+    if(checks.length){
+      result.checks.push(...checks);
+      result.report+='\nWebview observations:\n'+checks.map(check=>`[${check.status.toUpperCase()}] ${check.name}\n${check.detail}\n`).join('\n');
+      if(checks.some(check=>check.status==='warning'))result.summary+=' Review the webview capability warnings below.';
+    }
+    diagnosticsResult={...result,context};diagnosticsResults.set(suite,diagnosticsResult);
   }catch(error){diagnosticsError=error.name==='AbortError'?'Tests took too long. Keep ClipClub open and try again.':error.message;}
   finally{clearTimeout(timeout);diagnosticsBusy=false;renderDiagnostics();}
 }
 async function copyDiagnostics(){
-  if(!diagnosticsResult)return;
-  try{await navigator.clipboard.writeText(diagnosticsResult.report);toast('Diagnostics report copied.');}
+  const text=$('diagnostics-report').value;if(!text)return;
+  try{await navigator.clipboard.writeText(text);toast('Diagnostics report copied.');}
   catch{$('diagnostics-report').focus();$('diagnostics-report').select();toast('Report selected. Copy it with your keyboard or context menu.');}
 }
 function saveDiagnostics(){
-  if(!diagnosticsResult)return;
+  const text=$('diagnostics-report').value;if(!text)return;
   try{
-    const blob=new Blob([diagnosticsResult.report],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');
-    const generated=new Date(diagnosticsResult.generated_at_ms),stamp=Number.isFinite(generated.getTime())?generated.toISOString().replace(/[:.]/g,'-'):'report';
-    link.href=url;link.download=`clipclub-diagnostics-${stamp}.txt`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+    const generated=diagnosticsResult?new Date(diagnosticsResult.generated_at_ms):new Date(),stamp=Number.isFinite(generated.getTime())?generated.toISOString().replace(/[:.]/g,'-'):'report';
+    link.href=url;link.download=`clipclub-diagnostics-${diagnosticsSuite}-${stamp}.txt`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }catch{toast('Could not save the report. Use Copy report or select the report text.');}
 }
 function render(){
@@ -718,6 +822,16 @@ $('listen-addresses').addEventListener('click',event=>{const button=event.target
 $('diagnostics-form').addEventListener('submit',runDiagnostics);
 $('copy-diagnostics').addEventListener('click',copyDiagnostics);
 $('save-diagnostics').addEventListener('click',saveDiagnostics);
+$('diagnostics-menu').addEventListener('click',event=>{const button=event.target.closest('[data-diagnostic-suite]');if(button)setDiagnosticsSuite(button.dataset.diagnosticSuite);});
+$('diagnostics-checklist').addEventListener('change',event=>{
+  const select=event.target.closest('[data-diagnostic-step]');if(!select)return;
+  const id=select.dataset.diagnosticStep;
+  if(!diagnosticSteps.some(step=>step.id===id)||!['','pass','fail','skip'].includes(select.value))return;
+  if(select.value)diagnosticsChecklistResults[id]=select.value;else delete diagnosticsChecklistResults[id];
+  saveDiagnosticNotes();$(select.id)?.focus?.({preventScroll:true});
+});
+for(const id of ['diagnostics-device-label','diagnostics-notes'])$(id).addEventListener('input',saveDiagnosticNotes);
+$('diagnostics-network-condition').addEventListener('change',saveDiagnosticNotes);
 for(const id of ['diagnostics-p2p-port','diagnostics-torrent-port'])$(id).addEventListener('input',()=>diagnosticsPortEdits.add(id));
 window.addEventListener('pagehide',()=>{$('roll-player').pause();if(state?.session)fetch('/api/session',{method:'POST',headers:{'x-clipcrop-token':token,'Content-Type':'application/json'},body:'{"active":false}',keepalive:true}).catch(()=>{});});
 (async()=>{await refresh();initialized=true;setInterval(refresh,1500);})();
