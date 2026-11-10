@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prefer the packaged launcher, which also selects per-user data in a Debian
-# installation. The portable launcher keeps its adjacent profile by default.
+# Prefer the packaged launcher, which keeps its adjacent profile by default.
 installer_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_program="$installer_directory/launch-clipclub"
 if [[ ! -x "$default_program" ]]; then

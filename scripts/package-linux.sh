@@ -33,7 +33,6 @@ export CLIPCROP_PACKAGE_ROOT="$project_root"
 python3 <<'PY'
 import gzip
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -198,7 +197,7 @@ try:
         'ffprobe_corresponding_source': source_records,
         'embedded': ['interface assets', 'ffprobe video validator'],
         'system_runtime': ['GTK 3', 'WebKitGTK 4.1', 'GStreamer with playback codecs'],
-        'profile': 'Portable: clipclub-data beside the executable. Debian launchers: --user-data uses XDG_DATA_HOME/clipcrop-points, default HOME/.local/share/clipcrop-points. --data-dir overrides either mode.',
+        'profile': 'Portable: clipclub-data beside the executable. --user-data uses XDG_DATA_HOME/clipcrop-points, default HOME/.local/share/clipcrop-points. --data-dir overrides either mode.',
     }
     ldd_report = os.environ.get('CLIPCROP_LINUX_LDD_REPORT')
     if ldd_report:
@@ -218,75 +217,6 @@ try:
             with tarfile.open(fileobj=compressed, mode='w', format=tarfile.GNU_FORMAT) as archive:
                 archive.add(folder, arcname=archive_name, filter=filter_tar)
 
-    # Debian package: binary under /opt, launcher on PATH, normal desktop entry.
-    # User state is always outside the read-only installed application directory.
-    deb_root = work / 'debian'
-    opt = deb_root / 'opt/clipclub'
-    opt.mkdir(parents=True)
-    shutil.copytree(folder, opt, dirs_exist_ok=True)
-    # Both installed launchers explicitly select writable per-user storage.
-    # The portable archive above keeps the adjacent-data default.
-    (opt / 'launch-clipclub').write_text(
-        '#!/bin/sh\nset -eu\nexec /opt/clipclub/clipclub --user-data "$@"\n')
-    bin_dir = deb_root / 'usr/bin'; bin_dir.mkdir(parents=True)
-    launcher = bin_dir / 'clipclub'
-    launcher.write_text('#!/bin/sh\nset -eu\nexec /opt/clipclub/clipclub --user-data "$@"\n')
-    launcher.chmod(0o755)
-    applications = deb_root / 'usr/share/applications'; applications.mkdir(parents=True)
-    (applications / 'local.clipclub.desktop').write_text(
-        '[Desktop Entry]\nType=Application\nVersion=1.0\nName=clipclub\n'
-        'Comment=A small peer-to-peer video commons\nExec=/usr/bin/clipclub\nIcon=clipclub\n'
-        'Terminal=false\nCategories=AudioVideo;Video;Network;\nStartupNotify=true\n')
-    icons = deb_root / 'usr/share/icons/hicolor/512x512/apps'; icons.mkdir(parents=True)
-    shutil.copyfile(root / 'assets/icon.png', icons / 'clipclub.png')
-    doc_dir = deb_root / 'usr/share/doc/clipclub'; doc_dir.mkdir(parents=True)
-    shutil.copyfile(root / 'LICENSE', doc_dir / 'copyright')
-    shutil.copyfile(folder / 'LINUX.md', doc_dir / 'README.md')
-
-    dependencies = os.environ.get('CLIPCROP_LINUX_DEB_DEPENDS',
-        'libc6 (>= 2.35), libgcc-s1, libgtk-3-0 (>= 3.24), libwebkit2gtk-4.1-0, '
-        'gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav')
-    installed_size = sum(path.stat().st_size for path in deb_root.rglob('*') if path.is_file()) // 1024
-    control = (
-        f'Package: clipclub\nVersion: {version}\nSection: video\nPriority: optional\n'
-        f'Architecture: amd64\nInstalled-Size: {installed_size}\n'
-        f'Depends: {dependencies}\nMaintainer: clipclub contributors <clipclub@localhost>\n'
-        'Description: A small peer-to-peer video commons\n'
-        ' Share short MP4/WebM clips through BitTorrent, watch and rate videos,\n'
-        ' and exchange experimental points using signed peer-to-peer receipts.\n'
-        ' The UI and validator are embedded; GTK/WebKitGTK and codecs use system libraries.\n')
-    md5sums = ''.join(f'{hashlib.md5(path.read_bytes()).hexdigest()}  {path.relative_to(deb_root)}\n'
-                      for path in sorted(deb_root.rglob('*')) if path.is_file())
-    control_buffer = io.BytesIO()
-    with gzip.GzipFile(fileobj=control_buffer, mode='wb', mtime=stamp, filename='') as compressed:
-        with tarfile.open(fileobj=compressed, mode='w', format=tarfile.GNU_FORMAT) as archive:
-            for name, text in [('control', control), ('md5sums', md5sums)]:
-                data = text.encode()
-                info = tarfile.TarInfo('./' + name); info.mode = 0o644; info.size = len(data)
-                archive.addfile(filter_tar(info), io.BytesIO(data))
-    data_path = work / 'data.tar.gz'
-    with data_path.open('wb') as output:
-        with gzip.GzipFile(fileobj=output, mode='wb', mtime=stamp, filename='') as compressed:
-            with tarfile.open(fileobj=compressed, mode='w', format=tarfile.GNU_FORMAT) as archive:
-                for path in sorted(deb_root.iterdir()):
-                    archive.add(path, arcname='./' + path.name, filter=filter_tar)
-    deb_path = work / f'clipclub_{version}_amd64.deb'
-    with deb_path.open('wb') as deb:
-        deb.write(b'!<arch>\n')
-        for name, value in [('debian-binary', b'2.0\n'), ('control.tar.gz', control_buffer.getvalue()), ('data.tar.gz', data_path)]:
-            size = len(value) if isinstance(value, bytes) else value.stat().st_size
-            header = f'{name + "/":<16}{stamp:<12}{0:<6}{0:<6}{"100644":<8}{size:<10}`\n'.encode('ascii')
-            if len(header) != 60:
-                raise SystemExit('Invalid Debian ar header')
-            deb.write(header)
-            if isinstance(value, bytes):
-                deb.write(value)
-            else:
-                with value.open('rb') as stream:
-                    shutil.copyfileobj(stream, deb)
-            if size % 2:
-                deb.write(b'\n')
-
     final_folder = output_parent / 'linux-x86_64'
     if final_folder.exists():
         # Refuse to replace a folder in which someone already ran a portable profile.
@@ -294,16 +224,12 @@ try:
             raise SystemExit('dist/linux-x86_64 contains a profile; move it out before replacing the package')
         shutil.rmtree(final_folder)
     shutil.move(str(folder), final_folder)
-    artifacts = []
-    for artifact in [portable, deb_path]:
-        target = output_parent / artifact.name
-        os.replace(artifact, target)
-        artifacts.append(target)
+    artifact = output_parent / portable.name
+    os.replace(portable, artifact)
     checksums = output_parent / 'clipclub-linux-x86_64-SHA256SUMS.txt'
-    checksums.write_text(''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n' for path in artifacts))
+    checksums.write_text(f'{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}\n')
     print('Linux folder:', final_folder)
-    for artifact in artifacts:
-        print('Linux artifact:', artifact)
+    print('Linux artifact:', artifact)
     print('Checksums:', checksums)
 finally:
     shutil.rmtree(work)

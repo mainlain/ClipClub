@@ -6,22 +6,12 @@ See the [project overview](../README.md) for app features and the [release guide
 
 ## Packages
 
-The x86-64 release targets Ubuntu 22.04 or a newer compatible desktop with GTK 3 and WebKitGTK 4.1. It contains an embedded Linux video validator; the OS WebView and GStreamer remain system libraries.
+All compatible Linux distributions, including Ubuntu and Debian, use the same portable x86-64 archive. The release targets glibc 2.35 or newer with GTK 3 and WebKitGTK 4.1. It contains an embedded Linux video validator; the OS WebView and GStreamer remain system libraries.
 
 Release filenames include the version. The examples below use `0.2.0`; substitute the version you downloaded.
 
 - `clipclub-0.2.0-linux-x86_64.tar.gz`: portable archive.
-- `clipclub_0.2.0_amd64.deb`: Debian/Ubuntu package with a desktop-menu entry.
 - `SHA256SUMS.txt`: published package and manifest checksums.
-
-On Debian/Ubuntu, install the `.deb` and its runtime dependencies with:
-
-```sh
-sudo apt install ./clipclub_0.2.0_amd64.deb
-clipclub
-```
-
-The Debian package's command-line and desktop launchers use `--user-data`, storing your profile in `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Removing the package does not remove that profile. The installed app files under `/opt/clipclub` remain separate from per-user data.
 
 ## Run a portable package
 
@@ -41,7 +31,7 @@ The packaged wrapper uses the same profile location:
 ./launch-clipclub
 ```
 
-Use `--data-dir PATH` with either executable or launcher to choose a profile folder, or `--user-data` to use the per-user location described above. `--data-dir` takes precedence. The default portable folder must be writable; the app reports an error instead of silently switching to another profile. In-app updates retain the portable `clipclub-data` folder when replacing the package.
+Use `--data-dir PATH` with either executable or launcher to choose a profile folder, or `--user-data` to store your profile in `$XDG_DATA_HOME/clipcrop-points`, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. `--data-dir` takes precedence. The default portable folder must be writable; the app reports an error instead of silently switching to another profile. In-app updates retain the portable `clipclub-data` folder when replacing the package.
 
 The executable is architecture-specific. Use the package matching your Linux machine; an x86-64 package does not run natively on ARM64.
 
@@ -116,7 +106,7 @@ The default peer mesh and BitTorrent ports are TCP 42931 and 42932. Peers connec
 
 ### Checking local discovery
 
-The portable application and Debian installation use the same networking code. Keep ClipClub open on both devices, check that Settings shows different peer IDs, and compare their versions. Local discovery uses IPv4 mDNS on UDP 5353, followed by a connection to the other device's peer TCP port. The BitTorrent TCP port is needed for video transfer. A device can receive a discovery announcement while a firewall still blocks the subsequent TCP connection.
+Keep ClipClub open on both devices, check that Settings shows different peer IDs, and compare their versions. Local discovery uses IPv4 mDNS on UDP 5353, followed by a connection to the other device's peer TCP port. The BitTorrent TCP port is needed for video transfer. A device can receive a discovery announcement while a firewall still blocks the subsequent TCP connection.
 
 Open **Main menu → Diagnostics → Run tests** on each device. The built-in report shows the running app's mDNS observations, authenticated mesh connections, local listener checks, clip readiness, and bounded TCP checks to observed peer endpoints. Enter the other device's Wi-Fi IPv4 address to test it even when discovery has no results; adjust the ports if that device uses custom ones. Use **Copy report** or **Save report** and compare both reports. A successful connection in one direction does not establish reachability in the other direction. The tests make no firewall or router changes.
 

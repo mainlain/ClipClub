@@ -20,7 +20,7 @@ On Apple Silicon macOS, open `dist/clipclub.app`, or run the executable:
 
 The app is portable by default: your profile is stored in `clipclub-data` beside the executable, or beside `clipclub.app` on macOS. Keep the app and that data folder together inside one writable folder; quit before moving or copying the whole folder to another location or computer. The macOS profile stays outside the signed app bundle so creating a wallet does not change the app's signature. The profile location follows the application, regardless of the terminal's working directory.
 
-Use `--data-dir PATH` to choose a different profile folder. For system installations or a read-only application location, `--user-data` selects `~/Library/Application Support/ClipCrop Points` on macOS or `$XDG_DATA_HOME/clipcrop-points` on Linux, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. Debian package launchers select this mode automatically. An explicit `--data-dir` takes precedence. Portable mode reports an error if its folder is not writable, so it cannot silently open a different wallet in your home directory.
+Use `--data-dir PATH` to choose a different profile folder. For system installations or a read-only application location, `--user-data` selects `~/Library/Application Support/ClipCrop Points` on macOS or `$XDG_DATA_HOME/clipcrop-points` on Linux, defaulting to `~/.local/share/clipcrop-points` when `XDG_DATA_HOME` is unset, empty, or relative. An explicit `--data-dir` takes precedence. Portable mode reports an error if its folder is not writable, so it cannot silently open a different wallet in your home directory.
 
 The profile contains your private peer identity, legacy rating history, watched history, uploaded files, cached videos, an encrypted wallet keystore when you create or import a wallet, and a public-wallet/roll journal. The bundled video validator is extracted into that same folder. Back up the entire profile directory. New peer identities receive no cryptocurrency grant; creating profiles cannot mint ✨. To open a copy of a profile, use `--data-dir /path/to/profile-copy`. Do not share `identity.key` with other people.
 
@@ -28,7 +28,7 @@ The app closes its network sessions when you quit. It resumes your permanent lib
 
 ### Linux
 
-Linux x86-64 builds target Ubuntu 22.04 or a compatible newer distribution with GTK 3 / WebKitGTK 4.1. The video validator is embedded; the OS supplies the desktop WebView and GStreamer playback codecs.
+Linux x86-64 releases use one portable `.tar.gz` archive for all compatible distributions, including Ubuntu and Debian. Builds target glibc 2.35 or newer with GTK 3 / WebKitGTK 4.1. The video validator is embedded; the OS supplies the desktop WebView and GStreamer playback codecs.
 
 See [Linux run and build instructions](docs/LINUX.md) for runtime packages, portable data storage, and the optional application-menu launcher. The Linux release artifacts and build/test details are recorded alongside the packaged files.
 
@@ -36,7 +36,7 @@ See [Linux run and build instructions](docs/LINUX.md) for runtime packages, port
 
 ClipClub checks the [latest published GitHub release](https://github.com/mainlain/ClipClub/releases/latest) at startup and every six hours. Settings shows the installed version, available update, release notes, and a manual check. Drafts and prereleases are excluded. GitHub access is anonymous; the app does not contain a GitHub credential.
 
-On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. The adjacent macOS profile is kept in place, and the Linux portable `clipclub-data` folder is retained when replacing its package. A direct macOS executable and system-managed installations such as a Debian package offer the matching download for manual installation. An update is installed only when you choose it.
+On a writable macOS app bundle or portable Linux installation, **Install and restart** downloads the matching OS/CPU package, verifies GitHub's SHA-256 asset digest, validates the package, and replaces the app after it exits. A failed replacement restores the previous app. The adjacent macOS profile is kept in place, and the Linux portable `clipclub-data` folder is retained when replacing its package. A direct macOS executable and system-managed installations offer the matching download for manual installation. An update is installed only when you choose it.
 
 Release builds support Apple Silicon macOS and Linux x86-64. See [release publishing and update packaging](docs/RELEASES.md) for the tag-driven build workflow.
 

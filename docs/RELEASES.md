@@ -4,7 +4,7 @@ See the [project overview](../README.md) for using the app and the [Linux guide]
 
 The source repository and release downloads are public so installed apps can check GitHub and download packages without user accounts, embedded tokens, or a separate update service. The app reads `https://api.github.com/repos/mainlain/ClipClub/releases/latest`, selects a package for its OS/CPU, and verifies the SHA-256 asset digest supplied by GitHub before preparing an installation. The separately published manifest/checksum files provide an audit record; the app does not trust a user-provided update URL.
 
-Checks run at startup and every six hours, with a manual check in Settings. Choosing **Install and restart** updates a writable macOS app bundle or portable Linux installation. A staged helper replaces the application after it exits and restores the previous app if replacement fails; the existing profile is retained. A direct macOS executable and system-managed Linux installation such as `.deb` use the browser download/manual installation path. No release is required during setup, and publishing a new stable version advertises it to the next successful check.
+Checks run at startup and every six hours, with a manual check in Settings. Choosing **Install and restart** updates a writable macOS app bundle or portable Linux installation. A staged helper replaces the application after it exits and restores the previous app if replacement fails; the existing profile is retained. A direct macOS executable and system-managed Linux installation use the browser download/manual installation path. No release is required during setup, and publishing a new stable version advertises it to the next successful check.
 
 ## Pre-1.0 policy
 
@@ -44,7 +44,8 @@ For example, version `0.2.0` produces these assets:
 | --- | --- | --- |
 | macOS Apple Silicon | `clipclub-0.2.0-macos-aarch64.zip` | `clipclub.app/` at the archive root |
 | Linux x86-64 portable | `clipclub-0.2.0-linux-x86_64.tar.gz` | `clipclub-0.2.0-linux-x86_64/` at the archive root |
-| Debian/Ubuntu x86-64 | `clipclub_0.2.0_amd64.deb` | System package under `/opt/clipclub` with desktop entry |
+
+Ubuntu and Debian use the Linux portable archive. The Linux build runs on an Ubuntu 22.04 CI runner to retain the glibc 2.35 baseline.
 
 `update-manifest.json` records the version, tag, target, filename, size, SHA-256, and GitHub download URL of every package. `SHA256SUMS.txt` records package and manifest digests. Asset names and archive roots are part of the app updater contract and must remain synchronized with `src/update.rs` and `src/update_install.rs`.
 

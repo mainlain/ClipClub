@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -62,23 +61,25 @@ class ReleaseTests(unittest.TestCase):
             root = Path(directory)
             args = argparse.Namespace(tag='v' + version, repository='mainlain/ClipClub', directory=root)
             filenames = [release.asset_name(version, target) for target in release.TARGETS]
-            filenames.append(f'clipclub_{version}_amd64.deb')
             for name in filenames[:-1]:
                 (root / name).write_bytes(b'release asset: ' + name.encode())
             with self.assertRaises(ValueError):
                 release.write_manifest(args)
             self.assertFalse((root / 'update-manifest.json').exists())
-            (root / filenames[-1]).write_bytes(b'debian asset')
+            (root / filenames[-1]).write_bytes(b'release asset: ' + filenames[-1].encode())
             release.write_manifest(args)
             data = json.loads((root / 'update-manifest.json').read_text())
             self.assertEqual(data['version'], version)
-            self.assertEqual(len(data['assets']), 3)
+            self.assertCountEqual([asset['name'] for asset in data['assets']], filenames)
             for asset in data['assets']:
+                self.assertEqual(asset['kind'], 'portable')
                 contents = (root / asset['name']).read_bytes()
                 self.assertEqual(asset['size'], len(contents))
                 self.assertEqual(asset['sha256'], hashlib.sha256(contents).hexdigest())
                 self.assertEqual(asset['url'], f'https://github.com/mainlain/ClipClub/releases/download/v{version}/{asset["name"]}')
-            self.assertIn('  update-manifest.json\n', (root / 'SHA256SUMS.txt').read_text())
+            self.assertEqual((root / 'SHA256SUMS.txt').read_text(), ''.join(
+                f'{release.digest(root / name)}  {name}\n'
+                for name in [*filenames, 'update-manifest.json']))
 
     def test_linux_archive_matches_updater_layout_and_keeps_notices(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -125,27 +126,10 @@ class ReleaseTests(unittest.TestCase):
                 info = json.load(archive.extractfile(folder + '/BUILD-INFO.json'))
                 self.assertIn('clipclub-data beside the executable', info['profile'])
                 self.assertFalse(any('/clipclub-data/' in name for name in archive.getnames()))
-            debian = output / f'clipclub_{version}_amd64.deb'
-            # Inspect the real Debian payload without requiring dpkg on macOS.
-            deb_contents = debian.read_bytes()
-            self.assertTrue(deb_contents.startswith(b'!<arch>\n'))
-            offset = 8
-            while offset < len(deb_contents):
-                header = deb_contents[offset:offset + 60]
-                size = int(header[48:58])
-                payload = deb_contents[offset + 60:offset + 60 + size]
-                if header[:16].decode().strip().rstrip('/') == 'data.tar.gz':
-                    break
-                offset += 60 + size + size % 2
-            else:
-                self.fail('Debian package is missing data.tar.gz')
-            with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as archive:
-                for name in ('./usr/bin/clipclub', './opt/clipclub/launch-clipclub'):
-                    launcher = archive.extractfile(name).read().decode()
-                    self.assertIn('exec /opt/clipclub/clipclub --user-data "$@"', launcher)
-                    self.assertEqual(archive.getmember(name).mode, 0o755)
-                desktop = archive.extractfile('./usr/share/applications/local.clipclub.desktop').read().decode()
-                self.assertIn('Exec=/usr/bin/clipclub\n', desktop)
+            self.assertCountEqual([path.name for path in output.iterdir() if path.is_file()],
+                                  [folder + '.tar.gz', 'clipclub-linux-x86_64-SHA256SUMS.txt'])
+            self.assertEqual((output / 'clipclub-linux-x86_64-SHA256SUMS.txt').read_text(),
+                             f'{release.digest(output / (folder + ".tar.gz"))}  {folder}.tar.gz\n')
 
             # Repackaging must never remove a profile created in the build output.
             wallet = output / 'linux-x86_64/clipclub-data/wallet.json'

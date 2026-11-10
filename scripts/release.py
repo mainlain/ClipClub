@@ -161,8 +161,7 @@ def package_release(args):
                 'CLIPCROP_LINUX_THIRD_PARTY_NOTICE': str(notice),
             })
             subprocess.run(['bash', str(ROOT / 'scripts/package-linux.sh')], cwd=ROOT, env=environment, check=True)
-            for filename in (name, f'clipclub_{version}_amd64.deb'):
-                shutil.copyfile(stage / filename, args.output / filename)
+            shutil.copyfile(stage / name, args.output / name)
         print(args.output / name)
 
 
@@ -171,7 +170,6 @@ def write_manifest(args):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args.repository):
         raise ValueError('Use a GitHub owner/repository name')
     names = [(target, asset_name(version, target), 'portable') for target in TARGETS]
-    names.append(('x86_64-unknown-linux-gnu', f'clipclub_{version}_amd64.deb', 'deb'))
     assets = []
     for target, name, kind in names:
         path = args.directory / name
